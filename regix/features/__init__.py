@@ -12,28 +12,8 @@ channels normalised voxel by voxel.
 In both cases the channels are then reduced by a PCA with a **shared** basis
 across the two volumes (``reduce.py``): without a shared basis, comparing the
 fixed and moving channels is meaningless.
+
+Import from the modules directly: ``from regix.features.anatomix import
+extract_feature_pair``. Nothing is re-exported here, so that importing the package
+never drags torch in.
 """
-
-from regix.features.anatomix import (
-    AnatomixExtractor,
-    FeaturePair,
-    anatomix_available,
-    clip_for_modality,
-    extract_feature_pair,
-    resolve_device,
-)
-from regix.features.mind import mind_ssc_features
-from regix.features.reduce import features_to_sitk, joint_pca_reduce, voxel_normalize
-
-__all__ = [
-    "AnatomixExtractor",
-    "FeaturePair",
-    "anatomix_available",
-    "clip_for_modality",
-    "extract_feature_pair",
-    "resolve_device",
-    "mind_ssc_features",
-    "joint_pca_reduce",
-    "features_to_sitk",
-    "voxel_normalize",
-]

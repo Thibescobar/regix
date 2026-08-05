@@ -203,10 +203,6 @@ class InitConfig(BaseModel):
         default_factory=lambda: [(0, 0, 0), (0, 0, 15), (0, 0, -15), (10, 0, 0), (0, 10, 0)],
         description="Probe rotations combined with each candidate (ZYX Euler angles, degrees).",
     )
-    multistart_probe_iterations: int = Field(
-        default=64, description="Iterations of a brief rigid registration used to score each start."
-    )
-    multistart_probe_resolutions: int = 2
     transform_file: Path | None = Field(default=None, description="file mode: elastix .txt or ITK .tfm.")
     flip_check: bool = Field(
         default=False,
@@ -337,7 +333,6 @@ class OutputConfig(BaseModel):
     write_deformation_field: bool = False
     write_jacobian: bool = False
     write_features: bool = False
-    write_working_images: bool = False
     write_dicom: bool = Field(
         default=False, description="Also write the registered volume as a derived DICOM series."
     )
