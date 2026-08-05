@@ -31,9 +31,9 @@ jobs:
       - name: Install ruff
         run: pip install "ruff>=0.6"
       - name: Lint
-        run: ruff check regix tests
+        run: ruff check regix tests tools
       - name: Format check
-        run: ruff format --check --diff regix tests
+        run: ruff format --check --diff regix tests tools
         continue-on-error: true   # formatting is advisory, not a merge blocker
 
   test:
@@ -127,6 +127,17 @@ jobs:
           test -f ci_out/transform/final_transform.txt
           test -f ci_out/moving_registered.nii.gz
 
+      - name: Regenerate the README figures
+        # The images in docs/images/ are produced from a real run, never drawn by
+        # hand. Rebuilding them here means a change that breaks the QC figures --
+        # or the `regix doctor` table -- turns CI red instead of leaving the README
+        # illustrated with something the code no longer does.
+        run: |
+          python tools/export_readme_figures.py ci_out -o ci_figures
+          test -f ci_figures/qc-overlay.png
+          test -f ci_figures/qc-checkerboard.png
+          test -f ci_figures/doctor.svg
+
       - name: Upload the QC report as an artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -135,5 +146,6 @@ jobs:
           path: |
             ci_out/report.html
             ci_out/run_manifest.json
+            ci_figures/
           if-no-files-found: warn
           retention-days: 14
