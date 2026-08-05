@@ -1,0 +1,46 @@
+extends: base
+name: ct_cbct_igrt
+description: >
+  Positioning CBCT registered onto the planning CT (repositioning check).
+  Deliberately **rigid only**: the clinical question is "how far must the couch
+  move", and a deformable transform makes that answer unusable. Registration on
+  bone, with a bone window: soft tissue varies too much between sessions.
+  The CBCT field of view is small: its body mask acts as the moving mask, which
+  prevents the optimiser from trying to cover the whole CT.
+
+fixed_modality: CT
+moving_modality: CBCT
+
+preprocess:
+  working_spacing_mm: 1.5
+  fixed:
+    window: ct_bone
+    percentile_clip: null
+  moving:
+    window: ct_bone
+    percentile_clip: null
+
+features:
+  enabled: false                 # monomodal in practice; MI/NCC are sufficient
+
+organs:
+  backend: none
+  mask_dilate_mm: 5.0
+
+init:
+  mode: geometry
+
+stages:
+  - type: rigid
+    metric: ncc
+    n_resolutions: 4
+    max_iterations: 500
+    n_spatial_samples: 5000
+
+deformable_engine: none
+
+qc:
+  gates:
+    min_ncc_gain: 0.01
+    max_translation_mm: 40.0     # a realistic repositioning tolerance
+    max_scale_deviation: 0.02

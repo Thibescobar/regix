@@ -1,0 +1,57 @@
+extends: base
+name: ct_ct_lung_4d
+description: >
+  Inter-phase thoracic CT registration (inspiration <-> expiration, 4D-CT).
+  Large deformation (20-30 mm at the diaphragm): four resolutions, a 15 mm B-spline
+  grid, and a low bending-energy weight so the real motion can be captured.
+  The lung mask is essential -- without it the chest wall and the table dominate the
+  criterion and the lung stays poorly registered.
+
+fixed_modality: CT
+moving_modality: CT
+
+preprocess:
+  working_spacing_mm: 1.5
+  fixed:
+    window: ct_lung
+    percentile_clip: null
+  moving:
+    window: ct_lung
+    percentile_clip: null
+
+features:
+  enabled: false
+
+organs:
+  backend: totalsegmentator
+  targets: [lung_left, lung_right]
+  mask_dilate_mm: 10.0
+  roi_crop: true
+  roi_margin_mm: 20.0
+  qc_labels: [lung_left, lung_right]
+
+init:
+  mode: organ_centroid
+
+stages:
+  - type: rigid
+    metric: ncc
+    n_resolutions: 3
+    max_iterations: 300
+  - type: bspline
+    metric: ncc
+    n_resolutions: 4
+    max_iterations: 1000
+    n_spatial_samples: 10000
+    final_grid_spacing_mm: 15.0
+    bending_energy_weight: 0.5   # low: respiratory motion is large
+
+deformable_engine: elastix
+
+qc:
+  gates:
+    min_ncc_gain: 0.02
+    max_folding_fraction: 0.001
+    min_dice:
+      lung_left: 0.95
+      lung_right: 0.95

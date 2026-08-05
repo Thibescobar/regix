@@ -1,0 +1,67 @@
+extends: base
+name: mr_ct_prostate
+description: >
+  Pelvic T2 MR registered onto the planning CT (prostate delineation).
+  Multimodal, with low CT contrast: this is where features make the difference.
+  The mask is restricted to the pelvis with a margin, because bladder and rectal
+  filling dominate any global criterion and would drag the registration towards an
+  optimum unrelated to the prostate. Fine B-spline grid (12 mm) and a high bending
+  penalty: we want a gentle local deformation, not a remodelling of the anatomy.
+
+fixed_modality: CT
+moving_modality: MR
+
+preprocess:
+  working_spacing_mm: 1.5
+  fixed:
+    window: ct_soft
+    percentile_clip: null
+  moving:
+    percentile_clip: [0.5, 99.5]
+    n4_bias_correction: true
+
+features:
+  enabled: auto
+  n_components: 4
+
+organs:
+  # Radiotherapy contours already exist in practice: reuse them rather than
+  # re-segmenting. Supply the paths at run time:
+  #   regix register ct/ mr/ -p mr_ct_prostate \
+  #       --fixed-mask ct_structures.nii.gz --moving-mask mr_structures.nii.gz
+  backend: external
+  targets: [prostate]
+  mask_dilate_mm: 12.0
+  roi_crop: true
+  roi_margin_mm: 30.0
+  qc_labels: [prostate, urinary_bladder, rectum]
+
+init:
+  mode: organ_centroid
+
+stages:
+  - type: rigid
+    metric: auto
+    n_resolutions: 4
+    max_iterations: 600
+  - type: affine
+    metric: auto
+    n_resolutions: 3
+    max_iterations: 400
+  - type: bspline
+    metric: auto
+    n_resolutions: 3
+    max_iterations: 600
+    n_spatial_samples: 6000
+    final_grid_spacing_mm: 12.0
+    bending_energy_weight: 3.0
+
+deformable_engine: elastix
+
+qc:
+  gates:
+    min_nmi_gain: 0.0
+    max_folding_fraction: 0.0002
+    max_tre_mm: 3.0
+    min_dice:
+      prostate: 0.80

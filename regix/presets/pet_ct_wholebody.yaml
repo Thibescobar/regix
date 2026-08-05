@@ -1,0 +1,46 @@
+extends: base
+name: pet_ct_wholebody
+description: >
+  PET registered onto a whole-body CT. A special case: on a PET/CT acquired in the
+  same session both volumes already share the Frame of Reference -- the correct
+  registration is often the identity, and "correcting" at all costs degrades the
+  result. Hence init.mode candidates starting with identity and a chain deliberately
+  limited to rigid. The deformable stage is disabled: deforming a quantitative PET
+  redistributes activity and corrupts SUV values.
+
+fixed_modality: CT
+moving_modality: PT
+
+preprocess:
+  working_spacing_mm: 3.0        # PET resolution does not justify anything finer
+  fixed:
+    window: ct_soft
+    percentile_clip: null
+  moving:
+    percentile_clip: [0.0, 99.5]
+
+features:
+  enabled: auto
+
+organs:
+  backend: none
+  mask_dilate_mm: 10.0
+
+init:
+  mode: multistart
+  candidates: [identity, geometry, moments]
+
+stages:
+  - type: rigid
+    metric: auto
+    n_resolutions: 4
+    max_iterations: 400
+    n_spatial_samples: 5000
+
+deformable_engine: none
+
+qc:
+  gates:
+    min_nmi_gain: 0.0
+    max_translation_mm: 60.0     # beyond this it is a series mismatch, not a registration
+    max_scale_deviation: 0.05

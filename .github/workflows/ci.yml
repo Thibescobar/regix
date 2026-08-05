@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# A new push cancels the previous run on the same branch: no point burning
+# minutes on an already-outdated commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # matplotlib must not look for a display on a headless runner.
+  MPLBACKEND: Agg
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install ruff
+        run: pip install "ruff>=0.6"
+      - name: Lint
+        run: ruff check regix tests
+      - name: Format check
+        run: ruff format --check --diff regix tests
+        continue-on-error: true   # formatting is advisory, not a merge blocker
+
+  test:
+    name: Tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Regix (core only, no GPU, no optional weights)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Environment check
+        # `regix doctor` exits non-zero when the registration engine is missing:
+        # this is a real smoke test of the itk-elastix installation, not decoration.
+        run: regix doctor
+
+      - name: Unit tests
+        run: pytest tests/test_units.py -q --durations=10
+
+      - name: CLI and DICOM tests
+        run: pytest tests/test_cli.py tests/test_dicom_io.py -q --durations=10
+
+      - name: End-to-end phantom tests
+        # These are the tests that actually prove the registration is correct: they
+        # impose a known transform on a phantom and check it is recovered to within
+        # a voxel. Slower (~2-4 min), so run after the others.
+        run: pytest tests/test_pipeline.py -q --durations=10
+
+      - name: Coverage gate
+        if: matrix.python == '3.12'
+        # The threshold sits just below the figure on the README badge, so the badge
+        # cannot silently drift: a drop in coverage turns CI red.
+        run: pytest -q --cov=regix --cov-report=term-missing:skip-covered --cov-fail-under=75
+
+  cli:
+    name: CLI smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[dev]"
+
+      - name: Every command loads and every preset validates
+        run: |
+          regix version
+          regix --help
+          regix presets
+          python -c "
+          from regix.config import available_presets, load_preset
+          names = available_presets()
+          for name in names:
+              cfg = load_preset(name)
+              assert cfg.stages, name
+          print(f'{len(names)} presets validated: ' + ', '.join(names))
+          "
+
+      - name: Full registration through the CLI on a generated phantom
+        # Uses the test phantom, so no patient data ever reaches CI.
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, ".")
+          import SimpleITK as sitk
+          from tests.conftest import known_rigid, make_phantom, warp
+
+          fixed, _ = make_phantom("CT", noise=3.0)
+          moving = warp(fixed, known_rigid(fixed))
+          sitk.WriteImage(sitk.Cast(fixed, sitk.sitkFloat32), "ci_fixed.nii.gz", True)
+          sitk.WriteImage(sitk.Cast(moving, sitk.sitkFloat32), "ci_moving.nii.gz", True)
+          PY
+          regix register ci_fixed.nii.gz ci_moving.nii.gz -o ci_out \
+            --fixed-modality CT --moving-modality CT --overwrite --log-level WARNING
+          test -f ci_out/report.html
+          test -f ci_out/run_manifest.json
+          test -f ci_out/transform/final_transform.txt
+          test -f ci_out/moving_registered.nii.gz
+
+      - name: Upload the QC report as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qc-report
+          path: |
+            ci_out/report.html
+            ci_out/run_manifest.json
+          if-no-files-found: warn
+          retention-days: 14

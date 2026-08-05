@@ -1,0 +1,71 @@
+extends: base
+name: ct_mr_abdomen
+description: >
+  Abdominal MR registered onto CT (or the reverse). Typical use case:
+  characterising a liver lesion seen on MR against the reference CT. The anatomix
+  features make the pair comparable from the rigid stage onwards; mutual
+  information remains the automatic fallback when torch/anatomix are absent.
+  A 20 mm B-spline because the liver moves 10 to 25 mm with breathing.
+
+fixed_modality: CT
+moving_modality: MR
+
+preprocess:
+  working_spacing_mm: 2.0
+  fixed:
+    window: ct_registration      # [-450, 450] HU, the bounds used in the anatomix paper
+    percentile_clip: null
+    normalize: minmax
+  moving:
+    percentile_clip: [0.5, 99.5]
+    normalize: minmax
+    n4_bias_correction: true     # the B1 field biases intensity-based criteria
+
+features:
+  enabled: auto
+  variant: anatomix
+  n_components: 4
+
+organs:
+  backend: none                  # switch to totalsegmentator/suprem/external when available
+  targets: [liver]
+  mask_dilate_mm: 10.0
+  roi_crop: false
+  qc_labels: [liver, spleen, kidney_left, kidney_right]
+
+init:
+  mode: multistart
+  candidates: [geometry, moments, organ_centroid]
+  multistart_rotations_deg:
+    - [0, 0, 0]
+    - [0, 0, 10]
+    - [0, 0, -10]
+
+stages:
+  - type: rigid
+    metric: auto
+    n_resolutions: 4
+    max_iterations: 768
+    n_spatial_samples: 6000
+  - type: affine
+    metric: auto
+    n_resolutions: 3
+    max_iterations: 512
+    n_spatial_samples: 6000
+  - type: bspline
+    metric: auto
+    n_resolutions: 3
+    max_iterations: 512
+    n_spatial_samples: 8000
+    final_grid_spacing_mm: 20.0
+    bending_energy_weight: 1.0
+
+deformable_engine: elastix
+
+qc:
+  n_slices: 3
+  gates:
+    min_nmi_gain: 0.0
+    max_folding_fraction: 0.001
+    min_dice:
+      liver: 0.85

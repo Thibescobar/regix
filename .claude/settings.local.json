@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python \"C:\\\\Users\\\\THIBAU~1.ESC\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-thibault-escobar-Downloads-Regix\\\\8ff4504a-2fa5-4ee6-a510-16b994c1f367\\\\scratchpad\\\\probe_itk.py\")",
+      "PowerShell(python \"C:\\\\Users\\\\THIBAU~1.ESC\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-thibault-escobar-Downloads-Regix\\\\8ff4504a-2fa5-4ee6-a510-16b994c1f367\\\\scratchpad\\\\probe2.py\")",
+      "PowerShell(python \"C:\\\\Users\\\\THIBAU~1.ESC\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-thibault-escobar-Downloads-Regix\\\\8ff4504a-2fa5-4ee6-a510-16b994c1f367\\\\scratchpad\\\\probe3.py\")"
+    ]
+  }
+}

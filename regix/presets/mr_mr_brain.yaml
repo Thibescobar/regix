@@ -1,0 +1,46 @@
+extends: base
+name: mr_mr_brain
+description: >
+  Intracranial MR-MR registration (multi-sequence or follow-up). The skull is rigid:
+  the correct transform is rigid, full stop. An affine is only justified when the
+  spacings of the two acquisitions are suspect, and an intra-patient intracranial
+  deformable stage fabricates spurious volume changes -- exactly what follow-up
+  studies set out to measure.
+
+fixed_modality: MR
+moving_modality: MR
+
+preprocess:
+  working_spacing_mm: 1.5
+  fixed:
+    percentile_clip: [0.5, 99.5]
+    n4_bias_correction: true
+  moving:
+    percentile_clip: [0.5, 99.5]
+    n4_bias_correction: true
+
+features:
+  enabled: auto                  # useful between very different sequences (T1 / FLAIR / DWI)
+
+organs:
+  backend: none
+  mask_dilate_mm: 5.0
+
+init:
+  mode: multistart
+  candidates: [geometry, moments]
+
+stages:
+  - type: rigid
+    metric: auto
+    n_resolutions: 4
+    max_iterations: 500
+    n_spatial_samples: 4096
+
+deformable_engine: none
+
+qc:
+  gates:
+    max_translation_mm: 50.0
+    max_scale_deviation: 0.02    # very tight: a skull does not change size
+    max_folding_fraction: 0.0

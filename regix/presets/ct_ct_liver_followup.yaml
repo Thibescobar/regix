@@ -1,0 +1,60 @@
+extends: base
+name: ct_ct_liver_followup
+description: >
+  CT-CT liver follow-up (response assessment). Monomodal: cross correlation, no
+  need for features. ROI cropping on the segmented liver -- a 5x to 20x speed-up
+  over a whole-body registration, and above all the optimiser is no longer pulled
+  by the arms, the table or bowel content.
+  Requires a liver segmentation on both sides (any backend).
+
+fixed_modality: CT
+moving_modality: CT
+
+preprocess:
+  working_spacing_mm: 1.5
+  fixed:
+    window: ct_liver
+    percentile_clip: null
+  moving:
+    window: ct_liver
+    percentile_clip: null
+
+features:
+  enabled: false
+
+organs:
+  backend: totalsegmentator
+  targets: [liver]
+  mask_dilate_mm: 8.0
+  roi_crop: true
+  roi_margin_mm: 25.0
+  qc_labels: [liver, spleen, kidney_right]
+
+init:
+  mode: organ_centroid
+
+stages:
+  - type: rigid
+    metric: ncc
+    n_resolutions: 3
+    max_iterations: 400
+  - type: affine
+    metric: ncc
+    n_resolutions: 3
+    max_iterations: 400
+  - type: bspline
+    metric: ncc
+    n_resolutions: 3
+    max_iterations: 600
+    n_spatial_samples: 8000
+    final_grid_spacing_mm: 20.0
+    bending_energy_weight: 1.5
+
+deformable_engine: elastix
+
+qc:
+  gates:
+    min_ncc_gain: 0.02
+    max_folding_fraction: 0.0005
+    min_dice:
+      liver: 0.92

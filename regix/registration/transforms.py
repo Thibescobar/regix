@@ -1,0 +1,361 @@
+"""Transforms: elastix <-> ITK conversions, initial-transform writing, analysis.
+
+The convention to keep in mind throughout (this is error source number one in
+registration pipelines): **elastix, like ITK, defines the transform from the
+fixed image to the moving image**. It is used to resample the moving image onto
+the fixed grid (intensities are "pulled"). To move a *point* from the moving
+frame into the fixed frame you need the inverse -- which is what
+``matrix_moving_to_fixed()`` provides.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Sequence
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import SimpleITK as sitk
+
+from regix.logging_utils import get_logger
+
+log = get_logger("registration.transforms")
+
+ELASTIX_NO_INITIAL = "NoInitialTransform"
+
+
+# --------------------------------------------------------------------------- #
+# elastix -> ITK
+# --------------------------------------------------------------------------- #
+def parameter_map_to_transform(pmap) -> sitk.Transform | None:
+    """Convert an elastix parameter map into a ``sitk.Transform``.
+
+    Only closed-form parametric transforms are handled (translation / Euler /
+    affine / similarity). For B-splines and chains we stay with transformix:
+    re-implementing its composition would be a source of silent bugs.
+    """
+    name = _first(pmap, "Transform")
+    params = [float(v) for v in pmap["TransformParameters"]]
+    center = [float(v) for v in pmap.get("CenterOfRotationPoint", ("0", "0", "0"))]
+    dim = int(_first(pmap, "FixedImageDimension", "3"))
+    if dim != 3:
+        log.debug("ITK conversion not handled in dimension %d", dim)
+        return None
+
+    if name == "TranslationTransform":
+        t = sitk.TranslationTransform(3)
+        t.SetOffset(params[:3])
+        return t
+    if name == "EulerTransform":
+        t = sitk.Euler3DTransform()
+        t.SetCenter(center)
+        compute_zyx = _first(pmap, "ComputeZYX", "false").lower() == "true"
+        t.SetComputeZYX(compute_zyx)
+        t.SetParameters(params[:6])
+        return t
+    if name == "AffineTransform":
+        t = sitk.AffineTransform(3)
+        t.SetCenter(center)
+        t.SetMatrix(params[:9])
+        t.SetTranslation(params[9:12])
+        return t
+    if name == "SimilarityTransform":
+        # elastix: (versor_x, versor_y, versor_z, tx, ty, tz, scale)
+        t = sitk.Similarity3DTransform()
+        t.SetCenter(center)
+        try:
+            t.SetParameters(params[:7])
+            return t
+        except Exception as exc:  # pragma: no cover
+            log.warning("SimilarityTransform conversion failed (%s)", exc)
+            return None
+    log.debug("elastix transform '%s' is not convertible to a sitk.Transform", name)
+    return None
+
+
+def _first(pmap, key: str, default: str | None = None) -> str:
+    values = pmap.get(key) if hasattr(pmap, "get") else None
+    if not values:
+        if default is None:
+            raise KeyError(f"parameter '{key}' is missing")
+        return default
+    return str(values[0])
+
+
+def compose(transforms: Sequence[sitk.Transform]) -> sitk.Transform:
+    """Compose a sequence of transforms (application order = list order).
+
+    ``sitk.CompositeTransform`` applies the **last** added transform first, so we
+    add in reverse order to honour the intuitive "stage 1 then stage 2".
+    """
+    valid = [t for t in transforms if t is not None]
+    if not valid:
+        return sitk.Transform(3, sitk.sitkIdentity)
+    if len(valid) == 1:
+        return valid[0]
+    composite = sitk.CompositeTransform(3)
+    for t in reversed(valid):
+        composite.AddTransform(t)
+    return composite
+
+
+# --------------------------------------------------------------------------- #
+# Writing an initial transform in elastix format (-t0)
+# --------------------------------------------------------------------------- #
+def write_initial_transform_file(
+    path: str | Path,
+    transform_name: str,
+    parameters: Sequence[float],
+    center_of_rotation: Sequence[float],
+    fixed_image: sitk.Image,
+    initial_transform_file: str | Path | None = None,
+) -> Path:
+    """Write an initial transform readable by elastix (``-t0``).
+
+    Going through a file rather than resampling beforehand avoids an extra
+    interpolation: the initialization is composed analytically with the optimised
+    transform.
+    """
+    if transform_name not in ("TranslationTransform", "EulerTransform", "AffineTransform"):
+        raise ValueError(f"unsupported initial transform: {transform_name}")
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    size = fixed_image.GetSize()
+    spacing = fixed_image.GetSpacing()
+    origin = fixed_image.GetOrigin()
+    direction = fixed_image.GetDirection()
+    dim = fixed_image.GetDimension()
+    initial = str(initial_transform_file) if initial_transform_file else ELASTIX_NO_INITIAL
+
+    lines = [
+        "// Initial transform generated by Regix.",
+        f'(Transform "{transform_name}")',
+        f"(NumberOfParameters {len(parameters)})",
+        "(TransformParameters " + " ".join(f"{v:.10f}" for v in parameters) + ")",
+        # elastix 5.x reads 'InitialTransformParameterFileName' (singular); the
+        # plural 4.x spelling is written as well for compatibility.
+        f'(InitialTransformParameterFileName "{initial}")',
+        f'(InitialTransformParametersFileName "{initial}")',
+        '(HowToCombineTransforms "Compose")',
+        f"(FixedImageDimension {dim})",
+        f"(MovingImageDimension {dim})",
+        '(FixedInternalImagePixelType "float")',
+        '(MovingInternalImagePixelType "float")',
+        "(Size " + " ".join(str(int(s)) for s in size) + ")",
+        "(Index " + " ".join("0" for _ in size) + ")",
+        "(Spacing " + " ".join(f"{v:.10f}" for v in spacing) + ")",
+        "(Origin " + " ".join(f"{v:.10f}" for v in origin) + ")",
+        "(Direction " + " ".join(f"{v:.10f}" for v in direction) + ")",
+        '(UseDirectionCosines "true")',
+        "(CenterOfRotationPoint " + " ".join(f"{v:.10f}" for v in center_of_rotation) + ")",
+        '(ComputeZYX "false")',
+        # resampling block, required by transformix
+        '(ResampleInterpolator "FinalBSplineInterpolator")',
+        "(FinalBSplineInterpolationOrder 3)",
+        '(Resampler "DefaultResampler")',
+        "(DefaultPixelValue 0)",
+        '(ResultImageFormat "nii")',
+        '(ResultImagePixelType "float")',
+        '(CompressResultImage "false")',
+    ]
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+def euler_parameters(rotation_rad: Sequence[float], translation_mm: Sequence[float]) -> list[float]:
+    """elastix parameters of a 3D Euler transform: (rx, ry, rz, tx, ty, tz)."""
+    return [float(v) for v in list(rotation_rad)[:3]] + [float(v) for v in list(translation_mm)[:3]]
+
+
+def affine_parameters(matrix: np.ndarray, translation_mm: Sequence[float]) -> list[float]:
+    """elastix parameters of an affine: 9 matrix elements (row major) then 3 translations."""
+    m = np.asarray(matrix, dtype=float).reshape(3, 3)
+    return [float(v) for v in m.reshape(-1)] + [float(v) for v in list(translation_mm)[:3]]
+
+
+def transform_to_elastix_initial(
+    transform: sitk.Transform, fixed_image: sitk.Image, path: str | Path
+) -> Path:
+    """Write a linear ITK transform (including a composition) as an elastix initial transform.
+
+    Compositions are first reduced to a single affine: elastix can only chain
+    through files, and one file holds one transform.
+    """
+    if isinstance(transform, sitk.Euler3DTransform):
+        e = sitk.Euler3DTransform(transform)
+        return write_initial_transform_file(
+            path, "EulerTransform", list(e.GetParameters()), list(e.GetCenter()), fixed_image
+        )
+    try:
+        a = sitk.AffineTransform(transform)
+        return write_initial_transform_file(
+            path,
+            "AffineTransform",
+            list(a.GetMatrix()) + list(a.GetTranslation()),
+            list(a.GetCenter()),
+            fixed_image,
+        )
+    except Exception:
+        pass
+    matrix = linear_matrix_from_transform(transform)
+    if matrix is None:
+        raise ValueError(
+            f"transform {type(transform).__name__} is not linear: it cannot be used as an "
+            "elastix initialization"
+        )
+    # Centre of rotation at the origin: the translation absorbs everything else.
+    return write_initial_transform_file(
+        path,
+        "AffineTransform",
+        affine_parameters(matrix[:3, :3], matrix[:3, 3]),
+        [0.0, 0.0, 0.0],
+        fixed_image,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Analysis
+# --------------------------------------------------------------------------- #
+def linear_matrix_from_transform(
+    transform: sitk.Transform, tolerance_mm: float = 1e-3
+) -> np.ndarray | None:
+    """Numerically extract the 4x4 matrix of **any linear** transform.
+
+    Indispensable for the compositions (initialization + probe rotation) that
+    ``sitk.AffineTransform(t)`` refuses to convert. We measure the image of the
+    origin and of the three basis vectors, then **verify** linearity on a probe
+    point: otherwise a dense transform would pass for an affine, producing a
+    wrong and silent initialization.
+    """
+    try:
+        b = np.asarray(transform.TransformPoint([0.0, 0.0, 0.0]), dtype=float)
+        columns = []
+        for axis in range(3):
+            e = [0.0, 0.0, 0.0]
+            e[axis] = 100.0  # long lever arm: limits numerical noise
+            columns.append((np.asarray(transform.TransformPoint(e), dtype=float) - b) / 100.0)
+        A = np.stack(columns, axis=1)
+        probe = np.array([37.0, -19.0, 53.0])
+        expected = A @ probe + b
+        actual = np.asarray(transform.TransformPoint(probe.tolist()), dtype=float)
+        if float(np.linalg.norm(expected - actual)) > tolerance_mm:
+            return None
+    except Exception:  # pragma: no cover
+        return None
+    M = np.eye(4)
+    M[:3, :3] = A
+    M[:3, 3] = b
+    return M
+
+
+def flatten_linear(transform: sitk.Transform) -> sitk.AffineTransform | None:
+    """Reduce a **linear** composition to a single ``AffineTransform``.
+
+    The operation is mathematically lossless (the product of affine matrices is
+    an affine matrix), and it changes everything in practice: a four-level
+    ``CompositeTransform`` is unreadable in a visualisation station, whereas a
+    single affine loads, inspects and recomposes anywhere. Returns None if the
+    transform is not linear (B-spline, dense field) -- in which case it must
+    absolutely not be flattened.
+    """
+    matrix = linear_matrix_from_transform(transform)
+    if matrix is None:
+        return None
+    affine = sitk.AffineTransform(3)
+    affine.SetCenter([0.0, 0.0, 0.0])
+    affine.SetMatrix([float(v) for v in matrix[:3, :3].reshape(-1)])
+    affine.SetTranslation([float(v) for v in matrix[:3, 3]])
+    # Verification: flattening must be exact, not approximate.
+    for probe in ((0.0, 0.0, 0.0), (73.0, -41.0, 128.0), (-95.0, 62.0, -37.0)):
+        expected = np.asarray(transform.TransformPoint(probe), dtype=float)
+        actual = np.asarray(affine.TransformPoint(probe), dtype=float)
+        if float(np.linalg.norm(expected - actual)) > 1e-4:  # pragma: no cover
+            log.warning("imprecise linear flattening: keeping the transform as is")
+            return None
+    return affine
+
+
+def to_matrix_4x4(transform: sitk.Transform) -> np.ndarray | None:
+    """4x4 homogeneous matrix (fixed -> moving) of a linear transform, else None."""
+    try:
+        affine = sitk.AffineTransform(transform)
+    except Exception:
+        return linear_matrix_from_transform(transform)
+    A = np.asarray(affine.GetMatrix(), dtype=float).reshape(3, 3)
+    c = np.asarray(affine.GetCenter(), dtype=float)
+    t = np.asarray(affine.GetTranslation(), dtype=float)
+    # y = A (x - c) + t + c
+    M = np.eye(4)
+    M[:3, :3] = A
+    M[:3, 3] = t + c - A @ c
+    return M
+
+
+def matrix_moving_to_fixed(transform: sitk.Transform) -> np.ndarray | None:
+    """4x4 matrix taking **points** from the moving frame to the fixed frame (DICOM SRO convention)."""
+    M = to_matrix_4x4(transform)
+    if M is None:
+        return None
+    try:
+        return np.linalg.inv(M)
+    except np.linalg.LinAlgError:  # pragma: no cover
+        log.warning("singular matrix: cannot invert")
+        return None
+
+
+def decompose_affine(matrix: np.ndarray) -> dict[str, Any]:
+    """Decompose a 4x4 into translation, rotation, scales and shear.
+
+    Feeds the QC gates directly: a scale of 1.8 or a translation of 400 mm
+    indicates divergence, not a registration.
+    """
+    M = np.asarray(matrix, dtype=float)
+    A = M[:3, :3]
+    t = M[:3, 3]
+    # QR decomposition: A = Q R, Q a rotation, R upper triangular (scales + shear)
+    Q, R = np.linalg.qr(A)
+    signs = np.sign(np.diag(R))
+    signs[signs == 0] = 1.0
+    Q = Q * signs
+    R = R * signs[:, None]
+    scales = np.diag(R).copy()
+    shear = np.array([R[0, 1] / scales[1], R[0, 2] / scales[2], R[1, 2] / scales[2]])
+
+    # ZYX Euler angles from the rotation
+    sy = -Q[2, 0]
+    sy = float(np.clip(sy, -1.0, 1.0))
+    ry = np.arcsin(sy)
+    if abs(sy) < 0.999999:
+        rx = np.arctan2(Q[2, 1], Q[2, 2])
+        rz = np.arctan2(Q[1, 0], Q[0, 0])
+    else:  # pragma: no cover - degenerate case
+        rx = np.arctan2(-Q[1, 2], Q[1, 1])
+        rz = 0.0
+
+    return {
+        "translation_mm": [round(float(v), 3) for v in t],
+        "translation_norm_mm": round(float(np.linalg.norm(t)), 3),
+        "rotation_deg": [round(float(np.degrees(v)), 3) for v in (rx, ry, rz)],
+        "rotation_norm_deg": round(float(np.degrees(np.linalg.norm([rx, ry, rz]))), 3),
+        "scales": [round(float(v), 5) for v in scales],
+        "max_scale_deviation": round(float(np.max(np.abs(scales - 1.0))), 5),
+        "shear": [round(float(v), 5) for v in shear],
+        "determinant": round(float(np.linalg.det(A)), 6),
+    }
+
+
+def transform_points(transform: sitk.Transform, points: Iterable[Sequence[float]]) -> np.ndarray:
+    """Apply a transform to physical points (mm)."""
+    return np.asarray([transform.TransformPoint([float(v) for v in p]) for p in points], dtype=float)
+
+
+def save_transform(transform: sitk.Transform, path: str | Path) -> Path:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    sitk.WriteTransform(transform, str(p))
+    return p
+
+
+def load_transform(path: str | Path) -> sitk.Transform:
+    return sitk.ReadTransform(str(path))

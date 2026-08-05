@@ -1,0 +1,76 @@
+# ---------------------------------------------------------------------------
+# DONNEES PATIENT ET SORTIES : NE JAMAIS COMMITER
+# Une seule coupe DICOM oubliee dans un depot public est une violation de
+# donnees de sante. Ces regles sont volontairement large.
+# ---------------------------------------------------------------------------
+*.dcm
+*.DCM
+*.nii
+*.nii.gz
+*.nrrd
+*.nhdr
+*.mha
+*.mhd
+*.raw
+*.img
+*.hdr
+*.h5
+*.tfm
+
+# Repertoires de sortie et de donnees
+e2e_out/
+regix_out*/
+regix_batch*/
+regix_masks*/
+demo_data/
+dataregix/
+out/
+output/
+outputs/
+data/
+Fixed/
+Moving/
+**/dicom_registered/
+**/elastix/
+**/transformix/
+
+# Rapports et journaux d'execution (peuvent contenir des coupes patient)
+report.html
+run_manifest.json
+regix.log
+*.log
+summary.csv
+
+# Poids de modeles : jamais redistribues (licences propres)
+model-weights/
+*.pth
+*.pt
+*.ckpt
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ---------------------------------------------------------------------------
+# Outils et OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

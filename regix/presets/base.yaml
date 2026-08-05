@@ -1,0 +1,58 @@
+# Base preset: rigid then affine, CPU only, no optional dependency.
+# Every other preset inherits from it through `extends: base`.
+name: base
+description: >
+  Multi-resolution rigid + affine, automatic body mask, metric chosen from the
+  modalities. Works without a GPU, without a network, without segmentation.
+
+preprocess:
+  orientation: LPS
+  working_spacing_mm: 2.0
+  fixed:
+    normalize: minmax
+  moving:
+    normalize: minmax
+
+features:
+  enabled: auto        # active when the pair is multimodal and anatomix is available
+  n_components: 4
+
+organs:
+  backend: none
+  mask_dilate_mm: 8.0
+
+init:
+  mode: geometry
+
+stages:
+  - type: rigid
+    metric: auto
+    n_resolutions: 4
+    max_iterations: 512
+    n_spatial_samples: 4096
+  - type: affine
+    metric: auto
+    n_resolutions: 3
+    max_iterations: 512
+    n_spatial_samples: 4096
+
+deformable_engine: none
+
+qc:
+  enabled: true
+  report_html: true
+  jacobian: true
+  gates:
+    max_folding_fraction: 0.001
+    max_translation_mm: 150.0
+    max_scale_deviation: 0.35
+
+output:
+  write_resampled: true
+  write_transform: true
+  write_slicer_transform: true
+  compress: true
+
+runtime:
+  log_level: INFO
+  pseudonymize: true
