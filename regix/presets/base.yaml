@@ -8,10 +8,15 @@ description: >
 preprocess:
   orientation: LPS
   working_spacing_mm: 2.0
+  # No rescaling: what elastix receives keeps its acquisition scale, so hand-written
+  # parameter files (the elastix zoo, or anything a site has validated) behave as their
+  # authors intended. The [0, 1] normalisation anatomix and MIND require is applied by
+  # the feature path on its own inputs. Clipping is left to `auto`, which resolves per
+  # modality: nothing for CT/CBCT, robust percentiles for MR/PET.
   fixed:
-    normalize: minmax
+    normalize: none
   moving:
-    normalize: minmax
+    normalize: none
 
 features:
   enabled: auto        # active when the pair is multimodal and anatomix is available

@@ -1,22 +1,45 @@
 """Intensity preparation, per modality.
 
-The rules below come from practice, not aesthetics:
+**The governing invariant: what Regix hands to elastix stays on its native
+intensity scale.** Clipping is allowed -- it bounds values without moving them, so
+a Hounsfield unit remains a Hounsfield unit -- but rescaling is not, and it is
+``"none"`` by default.
 
-* CT: Hounsfield units are quantitative -> use fixed window bounds, never
-  percentiles, otherwise two CTs of the same patient are no longer comparable.
-* MR: arbitrary intensities -> robust percentiles (0.5 / 99.5) then min-max;
-  N4 optionally, when the B1 field is visible.
-* PET / NM: huge dynamic range with a long tail -> upper percentiles only.
-* Clipping is applied **before** any normalisation, and the bounds used are kept
-  in the metadata for traceability.
+That is not an aesthetic preference, it is interoperability. Every elastix
+parameter file published by the community (the parameter zoo, and anything a site
+has validated) was tuned on images at their acquisition scale. A file may
+legitimately declare ``(FixedInternalImagePixelType "short")``, pick a
+``NumberOfHistogramBins`` for the HU range, or set a hand-tuned
+``StandardGradientDescent`` step whose meaning depends on the gradient magnitude of
+the metric. Hand such a file min-max normalised data in [0, 1] and it silently
+stops working -- ``short`` alone rounds every voxel to 0 or 1 and takes Mattes
+mutual information to 1e-16. Regix used to normalise here, so it was Regix that was
+non-compliant, not the files.
 
-Order of operations, and why it is that order: N4 -> clipping -> denoising ->
-normalisation. N4 comes **first**, on the native intensities, because that is where
-a bias field is defined: it is a smooth multiplicative factor on the acquired
-signal, and estimating it after an intensity window has already truncated the
+Normalisation into [0, 1] is a requirement of the **feature extractors**, not of
+registration. It therefore lives where it belongs: ``normalize_for_features`` below,
+called by ``regix.features.anatomix`` on its own inputs. The same goes for the
+``ct_registration`` (-450, 450) window, which comes from the anatomix paper and is
+applied by ``clip_for_modality`` inside that path. Neither is a general default any
+more. Read this as the general rule: preprocessing specific to one consumer belongs
+to that consumer.
+
+Per-modality rules, all scale-preserving:
+
+* CT / CBCT: nothing. Hounsfield units are already quantitative and comparable
+  across acquisitions, and every intensity-based metric handles the native range.
+* MR: arbitrary intensities -> robust percentile *clipping* (0.5 / 99.5) to bound
+  outliers; N4 optionally, when the B1 field is visible.
+* PET / NM: huge dynamic range with a long tail -> upper percentile only.
+
+Order of operations, and why: N4 -> clipping -> denoising -> normalisation (if any
+was explicitly asked for). N4 comes **first**, on the native intensities, because
+that is where a bias field is defined: it is a smooth multiplicative factor on the
+acquired signal, and estimating it after an intensity window has truncated that
 signal means estimating it on a distorted version of the thing being modelled.
 Percentile bounds are therefore measured on the *corrected* image -- measuring them
 before N4 and applying them after would shift them by whatever the correction did.
+The bounds actually used are recorded in the metadata for traceability.
 """
 
 from __future__ import annotations
@@ -40,23 +63,33 @@ HU_WINDOWS: dict[str, tuple[float, float]] = {
     "ct_mediastinum": (-125.0, 225.0),
     "ct_bone": (-200.0, 1000.0),
     "ct_brain": (0.0, 80.0),
-    "ct_registration": (-450.0, 450.0),  # CT bounds used in the anatomix paper
+    # anatomix's own bounds, from its paper. Applied by regix.features.anatomix
+    # (clip_for_modality) on the images it feeds its network -- NOT a general default
+    # for the intensity path, which keeps native HU. Available by name for anyone who
+    # deliberately wants it.
+    "ct_registration": (-450.0, 450.0),
 }
 
 #: Suggested default preparation per modality. Every entry states ``percentile_clip``
-#: explicitly, so that resolving ``"auto"`` can never yield ``"auto"`` again.
+#: explicitly, so that resolving ``"auto"`` can never yield ``"auto"`` again, and none
+#: of them rescales: see the module docstring.
+#:
+#: CT and CBCT get no clipping at all. That is deliberate: Hounsfield units are
+#: quantitative, elastix works on them natively, and this is what every published
+#: parameter file assumes. The former default here was the anatomix paper's
+#: (-450, 450) window, which belongs to the feature path and is applied there.
 DEFAULT_PREP_BY_MODALITY: dict[str, dict] = {
-    "CT": {"window": "ct_registration", "percentile_clip": None, "normalize": "minmax"},
-    "CBCT": {"window": "ct_registration", "percentile_clip": None, "normalize": "minmax"},
-    "MR": {"percentile_clip": (0.5, 99.5), "normalize": "minmax", "n4_bias_correction": False},
-    "PT": {"percentile_clip": (0.0, 99.5), "normalize": "minmax"},
-    "NM": {"percentile_clip": (0.0, 99.5), "normalize": "minmax"},
-    "US": {"percentile_clip": (1.0, 99.0), "normalize": "minmax"},
+    "CT": {"window": None, "percentile_clip": None},
+    "CBCT": {"window": None, "percentile_clip": None},
+    "MR": {"percentile_clip": (0.5, 99.5), "n4_bias_correction": False},
+    "PT": {"percentile_clip": (0.0, 99.5)},
+    "NM": {"percentile_clip": (0.0, 99.5)},
+    "US": {"percentile_clip": (1.0, 99.0)},
 }
 
 #: Fallback for a modality that is not in the table (typically UNKNOWN): robust
-#: percentiles, which assume nothing about the intensity scale.
-_FALLBACK_PREP: dict = {"percentile_clip": (0.5, 99.5), "normalize": "minmax"}
+#: percentile clipping, which assumes nothing about the intensity scale.
+_FALLBACK_PREP: dict = {"percentile_clip": (0.5, 99.5)}
 
 
 def default_prep_for(modality: str | None) -> ImagePrep:

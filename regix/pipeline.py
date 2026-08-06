@@ -345,6 +345,7 @@ class RegistrationPipeline:
             moving_modality=moving.modality,
             features_available=bool(fixed_channels),
             n_voxels=fixed_work.n_voxels,
+            intensity_range=_intensity_range(fixed_work.image),
         )
         stages = self._resolve_stages()
         with manifest.step("elastix") as info:
@@ -849,6 +850,7 @@ class RegistrationPipeline:
             linear_analysis=linear_analysis,
             landmarks=landmarks,
             deformable=outcome.is_deformable or applied.kind == "sitk",
+            stages=[s.to_dict() | {"final_metric": s.final_metric} for s in outcome.stages],
         ).to_dict()
 
         if qc["status"] == "FAIL" and cfg.runtime.fail_fast:
@@ -1047,6 +1049,13 @@ def _background_of(image: sitk.Image) -> float:
     f = sitk.MinimumMaximumImageFilter()
     f.Execute(sitk.Cast(image, sitk.sitkFloat32))
     return float(f.GetMinimum())
+
+
+def _intensity_range(image: sitk.Image) -> tuple[float, float]:
+    """(min, max) of the working image, for the parameter-file quantisation check."""
+    f = sitk.MinimumMaximumImageFilter()
+    f.Execute(sitk.Cast(image, sitk.sitkFloat32))
+    return float(f.GetMinimum()), float(f.GetMaximum())
 
 
 def _is_dicom_dir(path: Path | None) -> bool:

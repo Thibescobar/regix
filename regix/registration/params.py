@@ -99,23 +99,26 @@ _MODALITY_FAMILIES = {"CT": "CT", "CBCT": "CT", "MR": "MR", "PT": "PT", "NM": "P
 #:   disagree with the one that was applied;
 #: * ``WriteResultImage``: Regix never reads elastix's resampled output -- it resamples
 #:   the *native* moving intensities onto the original fixed grid itself. Leaving this
-#:   true only costs a resample and a write per stage;
-#: * ``Fixed/MovingInternalImagePixelType``: this is the one that hurts. Published zoo
-#:   files are written for images read from disk in Hounsfield units, where ``"short"``
-#:   is the natural internal type. Regix hands elastix min-max **normalised floats in
-#:   [0, 1]** (and float feature channels), so an integer internal type rounds every
-#:   voxel to 0 or 1. Measured on a CT-CT phantom with Par0008.affine.txt: honouring
-#:   ``"short"`` collapses Mattes MI to 6.7e-16 -- no information left at all -- the
-#:   optimiser does nothing, and the run still reports WARN with a plausible-looking
-#:   transform. Forcing ``"float"`` on the same pair recovers the truth to 0.32 mm.
+#:   true only costs a resample and a write per stage.
+#:
+#: Note what is deliberately **not** in this list: ``FixedInternalImagePixelType``.
+#: ``"short"`` is the natural choice for images at their acquisition scale, and it used
+#: to be catastrophic here only because Regix min-max normalised its inputs into
+#: [0, 1], where an integer type rounds every voxel to 0 or 1 (measured with
+#: Par0008.affine.txt: Mattes MI down to 6.7e-16, the optimiser doing nothing, and the
+#: run still reporting WARN). The fix was to stop normalising -- Regix now hands elastix
+#: native intensities, so the file's own choice is honoured. ``_warn_on_quantisation``
+#: below still checks the combination, because a user can re-create it by asking for
+#: ``normalize: minmax`` explicitly.
 ENFORCED_WITH_PARAMETER_FILE: dict[str, tuple[str, ...]] = {
     "UseDirectionCosines": ("true",),
     "HowToCombineTransforms": ("Compose",),
     "AutomaticTransformInitialization": ("false",),
     "WriteResultImage": ("false",),
-    "FixedInternalImagePixelType": ("float",),
-    "MovingInternalImagePixelType": ("float",),
 }
+
+#: elastix internal pixel types that cannot represent a fractional intensity.
+_INTEGER_PIXEL_TYPES = frozenset({"short", "unsigned short", "char", "unsigned char", "int", "long"})
 
 
 @dataclass
@@ -130,6 +133,9 @@ class ParamContext:
     moving_modality: str = "UNKNOWN"
     features_available: bool = False
     n_voxels: int | None = None
+    #: (min, max) of the fixed image as handed to elastix. Only used to detect a
+    #: parameter file whose internal pixel type would quantise it away.
+    intensity_range: tuple[float, float] | None = None
 
 
 def same_modality(fixed: str | None, moving: str | None) -> bool:
@@ -355,10 +361,46 @@ def _from_parameter_file(stage: StageConfig, ctx: ParamContext) -> ParameterMap:
         pmap[key] = _as_tuple(value)
 
     _validate(pmap, dimension=ctx.dimension)
+    _warn_on_quantisation(pmap, ctx, path.name)
     log.info(
         "stage %s: parameters read from %s (%d keys)", stage.display_name, path.name, len(pmap)
     )
     return pmap
+
+
+def _warn_on_quantisation(pmap: ParameterMap, ctx: ParamContext, name: str) -> None:
+    """Catch an integer internal pixel type on data too narrow to survive it.
+
+    Regix keeps native intensities, so ``(FixedInternalImagePixelType "short")`` is
+    normally fine -- a Hounsfield unit is already an integer. The combination only
+    breaks when the images have been rescaled (``normalize: minmax`` asked for
+    explicitly), because rounding [0, 1] to integers leaves two distinct values and the
+    metric loses all information. That failure is silent: elastix reports success and
+    the criterion is ~0. One line here is cheaper than diagnosing it later.
+    """
+    if ctx.intensity_range is None:
+        return
+    declared = {
+        key: pmap[key][0]
+        for key in ("FixedInternalImagePixelType", "MovingInternalImagePixelType")
+        if key in pmap and pmap[key]
+    }
+    integer_types = {k: v for k, v in declared.items() if v.lower() in _INTEGER_PIXEL_TYPES}
+    if not integer_types:
+        return
+    lo, hi = ctx.intensity_range
+    if (hi - lo) >= 50.0:  # comfortably more distinct integers than any metric needs
+        return
+    log.warning(
+        "%s declares %s but the images span only [%.4g, %.4g]: rounding to integers "
+        "leaves almost no distinct values and the criterion will be meaningless. Set "
+        "preprocess.<side>.normalize=none (the default) so the acquisition scale "
+        "reaches elastix, or override the pixel type through the stage's 'extra'.",
+        name,
+        " and ".join(f"({k} {v})" for k, v in sorted(integer_types.items())),
+        lo,
+        hi,
+    )
 
 
 def required_image_count(pmap: ParameterMap) -> int:

@@ -89,7 +89,17 @@ class ImagePrep(BaseModel):
             "explicit request into the modality window."
         ),
     )
-    normalize: Literal["minmax", "zscore", "none"] = "minmax"
+    normalize: Literal["minmax", "zscore", "none"] = Field(
+        default="none",
+        description=(
+            "Intensity rescaling of the image handed to elastix. 'none' by default, and "
+            "that default matters: rescaling breaks every published elastix parameter "
+            "file, which assumes the acquisition scale (see regix.preprocess.intensity). "
+            "The [0, 1] normalisation that anatomix and MIND need is applied inside the "
+            "feature path, on their own inputs. Set this only if you know the parameters "
+            "of your stages were tuned on rescaled data."
+        ),
+    )
     n4_bias_correction: bool = Field(
         default=False,
         description=(
@@ -327,6 +337,18 @@ class QCGates(BaseModel):
     )
     max_folding_fraction: float = Field(
         default=1e-3, description="Max fraction of voxels with Jacobian <= 0 (field folding)."
+    )
+    min_abs_final_metric: float | None = Field(
+        default=1e-6,
+        description=(
+            "Floor on |final metric| of every stage. Not a quality threshold -- a floor: "
+            "any real criterion is above 1e-3, so this only catches a *degenerate* one, "
+            "where elastix ran, reported success and optimised nothing. That happens when "
+            "the images and the stage parameters disagree (an internal pixel type that "
+            "quantises the intensities away, for instance), and it is otherwise silent: "
+            "the transform stays plausible and the similarity gain is ~0, which passes "
+            "the gain gate. Set to null to disable."
+        ),
     )
     max_tre_mm: float | None = None
     max_translation_mm: float | None = Field(

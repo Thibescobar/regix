@@ -84,6 +84,7 @@ def evaluate_gates(
     linear_analysis: dict[str, Any] | None = None,
     landmarks: dict[str, Any] | None = None,
     deformable: bool = False,
+    stages: list[dict[str, Any]] | None = None,
 ) -> GateResult:
     """Compare the QC measurements against the configured thresholds."""
     result = GateResult()
@@ -107,8 +108,48 @@ def evaluate_gates(
                       "registration did not improve similarity: initialization or metric "
                       "is inadequate")
             )
+        elif gain == 0.0 and threshold == 0.0:
+            # `gain < threshold` cannot separate "did nothing" from "improved a little"
+            # when the threshold is 0. A strictly zero gain means the registration
+            # changed nothing measurable -- either the pair was already aligned, or the
+            # stage never moved. Not a failure on its own; worth saying out loud.
+            result.add(
+                Check(name, WARN, gain, threshold,
+                      f"{key.upper()} did not change: either the pair was already aligned, "
+                      "or the stage optimised nothing (check the stage criterion)")
+            )
         else:
             result.add(Check(name, PASS, gain, threshold))
+
+    # --- 1b. degenerate stage criterion ----------------------------------- #
+    # The only indicator that catches a stage which ran, succeeded and optimised
+    # nothing: the transform stays plausible and the similarity gain is ~0.
+    if gates.min_abs_final_metric is not None:
+        for stage in stages or []:
+            metric = stage.get("final_metric")
+            label = stage.get("stage", "?")
+            name = f"final_metric[{label}]"
+            if metric is None or not np.isfinite(metric):
+                result.add(
+                    Check(name, WARN, metric, gates.min_abs_final_metric,
+                          "stage criterion unavailable: could not be read back from the "
+                          "elastix log")
+                )
+            elif abs(float(metric)) < gates.min_abs_final_metric:
+                result.add(
+                    Check(
+                        name, FAIL, metric, gates.min_abs_final_metric,
+                        "degenerate criterion: elastix reported success but optimised "
+                        "nothing. The images and the stage parameters disagree -- check "
+                        "for an internal pixel type or an intensity rescaling that "
+                        "quantises the criterion away.",
+                    )
+                )
+            else:
+                # Reported even when it passes: this is the one number that betrays a
+                # silent failure, and the point of the gates is that every measurement
+                # ends up in the report where it can be re-read.
+                result.add(Check(name, PASS, metric, gates.min_abs_final_metric))
 
     # --- 2. per-organ Dice ------------------------------------------------ #
     for organ, threshold in (gates.min_dice or {}).items():

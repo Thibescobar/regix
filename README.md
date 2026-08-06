@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
 ![Tests](https://img.shields.io/badge/tests-90%20passed-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-77%25-yellowgreen)
+![Coverage](https://img.shields.io/badge/coverage-78%25-yellowgreen)
 ![Linting](https://img.shields.io/badge/linting-ruff-purple)
 
 This project provides a pipeline for registering medical image volumes across
@@ -315,30 +315,61 @@ stages:
     extra: { MaximumNumberOfIterations: 300 }   # still has the final say
 ```
 
-The file is used verbatim: its optimizer, samplers, pyramids, schedules and metric
-weights are all honoured, and Regix bolts nothing on. Six keys are re-imposed, with a
-warning in the log, and they are not tuning knobs — each one silently invalidates the
-pipeline around the file rather than changing the optimisation:
+The file is used verbatim: its optimizer, samplers, pyramids, schedules, histogram
+bins, internal pixel types and metric weights are all honoured, and Regix bolts nothing
+on. Four keys are re-imposed, with a warning in the log, and they are not tuning knobs
+— each one silently invalidates the pipeline around the file rather than changing the
+optimisation:
 
 | Key | Forced to | What honouring the file would do |
 |---|---|---|
-| `Fixed`/`MovingInternalImagePixelType` | `float` | zoo files assume images read from disk in Hounsfield units, where `short` is natural. Regix feeds elastix **min-max normalised floats in [0, 1]**, so an integer internal type rounds every voxel to 0 or 1. Measured with `Par0008.affine.txt` on a CT-CT phantom: Mattes MI collapses to `6.7e-16`, the optimiser moves nothing, the error stays at the initial 5.87 mm — and the run still reports `WARN`. Forced to `float`: **0.32 mm** |
 | `UseDirectionCosines` | `true` | its elastix default is `false`, which misregisters every oblique acquisition with no warning — and most zoo files predate the parameter |
 | `HowToCombineTransforms` | `Compose` | the `-t0` chain, `compose()` and the 4x4 export are all written for Compose; `Add` makes the composition arithmetic wrong |
 | `AutomaticTransformInitialization` | `false` | Regix computes and records its own initialisation; a second one makes the reported transform disagree with the applied one |
 | `WriteResultImage` | `false` | Regix resamples the *native* moving intensities itself and never reads elastix's output |
 
-The first row is the reason this list exists at all: a parameter map can be perfectly
-valid and still produce a plausible, wrong, `WARN`-status result. It is guarded by an
-end-to-end test on that real file, not by an assertion on a dictionary.
+Note what is **not** on that list: `FixedInternalImagePixelType`. Making it work was a
+question about Regix, not about the files — see below.
 
-Two mismatches are refused outright rather than warned about, because both also produce
-a plausible wrong answer: a `type:` that disagrees with the file's transform (Regix
-reads `type` to decide whether a stage result is a linear transform it can decompose),
-and a file whose dimension does not match the pair. Anything elastix itself handles
-gracefully is only reported — an `ImagePyramidSchedule` with the wrong number of values,
-for instance, makes elastix fall back to its default schedule, which is correct but
-means the file's intended pyramid is not the one that ran.
+Two mismatches are refused outright, because both produce a plausible wrong answer: a
+`type:` that disagrees with the file's transform (Regix reads `type` to decide whether a
+stage result is a linear transform it can decompose), and a file whose dimension does
+not match the pair. Anything elastix itself handles gracefully is only reported — an
+`ImagePyramidSchedule` with the wrong number of values, for instance, makes elastix fall
+back to its default schedule, which is correct but means the file's intended pyramid is
+not the one that ran.
+
+### Native intensities reach elastix
+
+**Regix does not rescale the images it hands to elastix.** Clipping is allowed — it
+bounds values without moving them, so a Hounsfield unit stays a Hounsfield unit — but
+`preprocess.<side>.normalize` is `none` by default, and CT/CBCT get no windowing either.
+
+This is an interoperability requirement, and it was learned the hard way. Regix used to
+min-max normalise into [0, 1] and window CT to (-450, 450) HU. Both come from
+[anatomix](https://github.com/neel-dey/anatomix) — they are what *its network* expects,
+and the paper's bounds. Generalising them to everything meant that a published parameter
+file declaring `(FixedInternalImagePixelType "short")` — the natural choice for images
+at acquisition scale — rounded every voxel to 0 or 1. Measured with `Par0008.affine.txt`
+on a CT-CT phantom: Mattes mutual information collapsed to `6.7e-16`, the optimiser
+moved nothing, the error stayed at the initial 5.87 mm, and the run still reported
+`WARN`. On native intensities the same file recovers the truth to **0.32 mm**.
+
+The rule generalises, and it is worth stating plainly: **preprocessing specific to one
+consumer belongs to that consumer.** anatomix and MIND still get their window and their
+[0, 1] normalisation, applied inside `regix.features` on their own inputs
+(`clip_for_modality`, `normalize_for_features`). One other thing fell out of fixing it:
+anatomix's own clipping had been a no-op, since clipping [0, 1] data to [-450, 450] HU
+does nothing — its network was being fed a min-max of the full HU range, outliers
+included, rather than the paper's preparation.
+
+A parameter map can be perfectly valid and still produce a plausible, wrong,
+`WARN`-status result, so the acceptance gates gained a floor on `|final metric|`
+(`qc.gates.min_abs_final_metric`, default `1e-6`). It is not a quality threshold: any
+real criterion is above `1e-3`, so it fires only on a *degenerate* one — a stage that
+ran, reported success and optimised nothing. That is the single indicator which caught
+the case above, since the similarity gain was ~0 and a gain of exactly zero used to pass
+the gain gate.
 
 **Quality control**, in decreasing order of reliability:
 
@@ -420,7 +451,7 @@ pytest tests/test_cli.py        # 16: every command and option, through the real
 pytest tests/test_dicom_io.py   #  7: synthetic DICOM series, derived series, DICOM REG
 pytest tests/test_registration_internals.py   # 19: initialization strategies, transform application
 ruff check regix tests          # lint
-pytest --cov=regix --cov-report=term-missing  # 77 % coverage
+pytest --cov=regix --cov-report=term-missing  # 78 % coverage
 ```
 
 The coverage figure on the badge is enforced, not decorative: CI runs
@@ -463,18 +494,30 @@ modalities, and `regix presets NAME` shows what was resolved.
   would require a Deformable Spatial Registration object.
 - The inverse of a dense transform is not approximated: Regix returns no result rather
   than an invisible error of a few millimetres.
-- With `sampler: RandomCoordinate` (default), two runs differ slightly. Use
-  `sampler: Grid` or `Full` for bit-exact reproducibility.
+- The random samplers are reproducible in practice: elastix seeds its generator
+  deterministically, so two runs of the same configuration on the same data give the
+  same transform (measured: 0.000 mm point-wise over 400 points, and identical
+  similarity metrics across separate processes). `runtime.seed` is *not* what achieves
+  that — it only seeds the feature PCA. Do not rely on this for anything safety-related
+  without checking it on your own elastix build; it is a property of that build, not a
+  guarantee Regix makes.
 - The instance-optimisation deformable stage (GPU, Adam) is not deterministic; it is
   flagged as such in the manifest.
 - The anatomix and TotalSegmentator code paths are written against the documented
   APIs of those projects but have not been executed in this environment (no GPU, weights
   not downloaded). Verify with `regix doctor` and a first run on your own data.
+- The automatic body mask disagrees with itself across resolutions: on the reference
+  run it measures 26 365 mL on the full-resolution moving volume against 19 114 mL at
+  the 2 mm working resolution, while the fixed volume agrees to 1 %. Both passes now
+  take the same −300 HU threshold, so the cause is resolution-dependent morphology
+  (the closing radius in voxels, and which component survives `keep_largest`), not the
+  intensity scale. The criterion mask and the QC mask therefore need not be the same
+  object — untangled on a dedicated branch.
 - Only one automatic segmentation backend is supported, on purpose: in Regix the masks
   are priors (initialisation, dilated criterion mask, ROI box, Dice), never deliverables,
   so a second segmenter would add nomenclatures and failure modes without buying
   registration accuracy.
-- Coverage stands at 77 %; the remaining gap is the hardware-dependent code above.
+- Coverage stands at 78 %; the remaining gap is the hardware-dependent code above.
 
 ## License
 

@@ -12,13 +12,16 @@ moving_modality: MR
 
 preprocess:
   working_spacing_mm: 2.0
+  # The [-450, 450] HU window and the [0, 1] normalisation this preset used to declare
+  # here are anatomix's, not the registration's: the feature path applies them itself
+  # (clip_for_modality + normalize_for_features). Declaring them here as well pushed
+  # them onto the intensity images too, which is what broke third-party parameter files
+  # -- and it also defeated anatomix's own clipping, since clipping [0, 1] data to
+  # [-450, 450] HU is a no-op.
   fixed:
-    window: ct_registration      # [-450, 450] HU, the bounds used in the anatomix paper
-    percentile_clip: null
-    normalize: minmax
+    percentile_clip: null        # native HU: nothing to bound on a CT
   moving:
-    percentile_clip: [0.5, 99.5]
-    normalize: minmax
+    percentile_clip: [0.5, 99.5] # MR outliers only; the scale is preserved
     # N4 off by default: this preset runs on anatomix/MIND features (features.enabled:
     # auto on a CT-MR pair), and those descriptors are already contrast-invariant, so
     # the correction buys almost nothing. Turn it on if you force metric: mi or ncc on

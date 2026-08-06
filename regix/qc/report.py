@@ -49,11 +49,18 @@ def _normalize(arr: np.ndarray, bounds: tuple[float, float]) -> np.ndarray:
     return np.clip((arr - lo) / (hi - lo), 0.0, 1.0)
 
 
-def _slice_positions(size: int, n: int) -> list[int]:
+def _slice_positions_around(centre: int, size: int, n: int, spread: float = 0.15) -> list[int]:
+    """``n`` indices spread around ``centre``, clamped inside the volume.
+
+    Used so that every plane of a multi-slice figure moves. Spreading around the
+    (mask-aware) centre rather than around the middle of the grid keeps the slices on
+    the anatomy: on a whole-body CT the geometric centre of the sagittal axis is still
+    the patient, but the centre of the axial axis need not be.
+    """
     if n <= 1:
-        return [size // 2]
-    fractions = np.linspace(0.35, 0.65, n)
-    return [int(round(f * (size - 1))) for f in fractions]
+        return [int(np.clip(centre, 0, size - 1))]
+    offsets = np.linspace(-spread, spread, n) * (size - 1)
+    return [int(np.clip(round(centre + offset), 0, size - 1)) for offset in offsets]
 
 
 def _extract_planes(arr: np.ndarray, index: tuple[int, int, int]) -> list[np.ndarray]:
@@ -104,10 +111,14 @@ def overlay_figure(
     f_bounds, a_bounds = _window(f_arr), _window(a_arr)
     b_bounds = _window(b_arr) if b_arr is not None else None
 
+    # One index per axis and per slice: the coronal and sagittal rows used to be pinned
+    # to the centre, so they repeated the same image n_slices times while only the axial
+    # row moved. Three identical panels look like three checks and are one.
     centre = _centre_index(fixed, mask)
-    positions = [
-        (_slice_positions(f_arr.shape[0], n_slices)[k], centre[1], centre[2]) for k in range(n_slices)
+    per_axis = [
+        _slice_positions_around(centre[axis], f_arr.shape[axis], n_slices) for axis in range(3)
     ]
+    positions = [(per_axis[0][k], per_axis[1][k], per_axis[2][k]) for k in range(n_slices)]
     aspects = _aspects(fixed.GetSpacing())
     columns = 2 if b_arr is not None else 1
     plane_names = ["axial", "coronal", "sagittal"]

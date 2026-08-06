@@ -294,15 +294,14 @@ def test_a_zoo_file_cannot_break_the_geometry_or_the_transform_chain(tmp_path):
 _REAL_ZOO_FILE = pathlib.Path(__file__).parent / "data" / "Parameters.Par0008.affine.txt"
 
 
-def test_a_real_zoo_file_cannot_quantise_the_normalised_intensities():
-    """The failure this guards against is the worst kind: silent and plausible.
+def test_a_real_zoo_file_keeps_its_own_internal_pixel_type():
+    """Compliance: `short` is the file's call, and on native intensities it is correct.
 
-    Zoo files are written for images read from disk in Hounsfield units, where
-    (FixedInternalImagePixelType "short") is the natural choice. Regix feeds elastix
-    min-max normalised floats in [0, 1], so `short` rounds every voxel to 0 or 1.
-    Measured on a CT-CT phantom with this very file: Mattes MI collapses to 6.7e-16,
-    the optimiser moves nothing, the transform error stays at the initial 5.87 mm --
-    and the run still reports WARN. Forcing float recovers the truth to 0.32 mm.
+    This used to be overridden to float, because Regix min-max normalised its inputs
+    into [0, 1] where an integer type rounds every voxel to 0 or 1 (Mattes MI down to
+    6.7e-16 on a CT-CT phantom, the optimiser moving nothing, the run still reporting
+    WARN). The right fix was upstream: Regix no longer rescales, so a Hounsfield unit
+    reaches elastix as a Hounsfield unit and the file's declaration holds.
     """
     from regix.config import StageConfig, TransformType
     from regix.registration.params import ParamContext, build_parameter_map
@@ -311,9 +310,33 @@ def test_a_real_zoo_file_cannot_quantise_the_normalised_intensities():
     assert '(FixedInternalImagePixelType "short")' in raw, "fixture no longer covers the case"
 
     stage = StageConfig(type=TransformType.AFFINE, parameter_file=_REAL_ZOO_FILE)
-    pmap = build_parameter_map(stage, ParamContext())
-    assert pmap["FixedInternalImagePixelType"] == ("float",)
-    assert pmap["MovingInternalImagePixelType"] == ("float",)
+    pmap = build_parameter_map(stage, ParamContext(intensity_range=(-1024.0, 1641.0)))
+    assert pmap["FixedInternalImagePixelType"] == ("short",)
+    assert pmap["MovingInternalImagePixelType"] == ("short",)
+
+
+def test_an_integer_pixel_type_on_rescaled_data_is_reported():
+    """The detection that replaced the override: honour the file, but say when it cannot work.
+
+    A user can still re-create the old catastrophe by asking for `normalize: minmax`
+    explicitly. Then `short` has two distinct values to work with and the criterion is
+    meaningless -- silently, because elastix reports success.
+    """
+    from regix.config import StageConfig, TransformType
+    from regix.registration.params import ParamContext, build_parameter_map
+
+    stage = StageConfig(type=TransformType.AFFINE, parameter_file=_REAL_ZOO_FILE)
+
+    with captured_logs("regix.registration.params") as records:
+        build_parameter_map(stage, ParamContext(intensity_range=(0.0, 1.0)))
+    assert any("quantis" in r.getMessage() or "distinct values" in r.getMessage() for r in records), (
+        "an integer pixel type on [0, 1] data must be reported"
+    )
+
+    # ... and stays quiet on native intensities, which is the normal case.
+    with captured_logs("regix.registration.params") as records:
+        build_parameter_map(stage, ParamContext(intensity_range=(-1024.0, 3071.0)))
+    assert not any("distinct values" in r.getMessage() for r in records)
 
 
 def test_a_real_zoo_file_keeps_its_own_tuning():
@@ -481,16 +504,59 @@ def test_image_count_required_by_elastix():
 # --------------------------------------------------------------------------- #
 # Intensity preparation: resolving the modality defaults
 # --------------------------------------------------------------------------- #
-def test_an_unspecified_ct_clipping_becomes_the_hu_window():
-    from regix.config import ImagePrep
-    from regix.preprocess.intensity import HU_WINDOWS, resolve_prep
+def test_an_unspecified_ct_is_left_on_its_native_scale():
+    """A CT reaches elastix as Hounsfield units: no window, no rescaling.
 
-    # What `base.yaml` produces: normalize set, nothing said about clipping.
-    prep = ImagePrep(normalize="minmax")
-    resolved = resolve_prep(prep, "CT")
-    assert resolved.window == "ct_registration"
+    This is the interoperability invariant. The former default was the anatomix paper's
+    (-450, 450) window plus a min-max rescale, which silently broke every hand-written
+    elastix parameter file -- those assume the acquisition scale. anatomix still gets
+    exactly that preparation, applied inside the feature path on its own inputs.
+    """
+    from regix.config import ImagePrep
+    from regix.preprocess.intensity import resolve_prep
+
+    resolved = resolve_prep(ImagePrep(), "CT")  # what base.yaml produces
+    assert resolved.window is None
+    assert resolved.clip is None
     assert resolved.percentile_clip is None
-    assert HU_WINDOWS[resolved.window] == (-450.0, 450.0)
+    assert resolved.normalize == "none"
+
+
+def test_no_bundled_preset_rescales_the_intensities():
+    """Guard on the invariant: a preset may clip (scale-preserving), never rescale."""
+    from regix.config import available_presets, load_preset
+
+    for name in available_presets():
+        cfg = load_preset(name)
+        for side in ("fixed", "moving"):
+            prep = getattr(cfg.preprocess, side)
+            assert prep.normalize == "none", (
+                f"{name}.{side} rescales to '{prep.normalize}': hand-written elastix "
+                "parameter files assume the acquisition scale"
+            )
+
+
+def test_the_anatomix_preparation_stays_inside_the_feature_path():
+    """anatomix's window and [0, 1] normalisation are its own, not the pipeline's."""
+    from regix.features.anatomix import clip_for_modality
+    from regix.preprocess.intensity import (
+        DEFAULT_PREP_BY_MODALITY,
+        HU_WINDOWS,
+        normalize_for_features,
+    )
+
+    # It still applies them, on its side.
+    assert clip_for_modality("CT") == HU_WINDOWS["ct_registration"] == (-450.0, 450.0)
+    arr = normalize_for_features(
+        sitk.GetImageFromArray(np.array([[[-1000.0, 0.0, 3000.0]]], dtype=np.float32)),
+        clip=(-450.0, 450.0),
+    )
+    assert float(arr.min()) == 0.0 and float(arr.max()) == 1.0
+
+    # And the general defaults do not.
+    for modality in ("CT", "CBCT"):
+        assert DEFAULT_PREP_BY_MODALITY[modality]["window"] is None
+        assert "normalize" not in DEFAULT_PREP_BY_MODALITY[modality]
 
 
 def test_an_explicit_percentile_clip_on_a_ct_is_honoured():
@@ -623,11 +689,14 @@ def test_the_effective_config_reports_the_clipping_that_was_applied(tmp_path):
     from regix.io.volume import Volume
     from regix.pipeline import RegistrationPipeline
 
-    fixed, _ = make_phantom("CT", seed=1)
-    moving, _ = make_phantom("CT", seed=2)
+    # An MR pair: its modality default *is* a clipping (robust percentiles), so there is
+    # something resolved to compare. A CT now resolves to "no clipping at all", which
+    # would make the assertion vacuous.
+    fixed, _ = make_phantom("MR", seed=1)
+    moving, _ = make_phantom("MR", seed=2)
     cfg = load_preset("base").with_overrides(
-        fixed_modality="CT",
-        moving_modality="CT",
+        fixed_modality="MR",
+        moving_modality="MR",
         preprocess={"working_spacing_mm": 4.0},
         stages=[{"type": "rigid", "n_resolutions": 1, "max_iterations": 8}],
         qc={"enabled": False, "report_html": False},
@@ -635,19 +704,22 @@ def test_the_effective_config_reports_the_clipping_that_was_applied(tmp_path):
         runtime={"log_level": "WARNING"},
     )
     result = RegistrationPipeline(cfg).run(
-        Volume(image=fixed, modality="CT"), Volume(image=moving, modality="CT"), tmp_path / "out"
+        Volume(image=fixed, modality="MR"), Volume(image=moving, modality="MR"), tmp_path / "out"
     )
 
     saved = RegistrationConfig.model_validate(
         yaml.safe_load(pathlib.Path(result.outputs["config"]).read_text(encoding="utf-8"))
     )
-    assert saved.preprocess.fixed.window == "ct_registration"
-    assert saved.preprocess.fixed.percentile_clip is None
+    assert saved.preprocess.fixed.percentile_clip == (0.5, 99.5), "sentinel left unresolved"
+    assert saved.preprocess.fixed.window is None
 
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     applied = next(s for s in manifest["steps"] if s["name"] == "preprocessing")
-    assert applied["fixed"]["clip"] == [-450.0, 450.0]
-    assert manifest["config"]["preprocess"]["fixed"]["window"] == "ct_registration"
+    # The manifest records the bounds that were actually applied; the effective config
+    # records the percentiles they came from. The two must describe the same run.
+    assert "clip" in applied["fixed"], "no clipping was applied for an MR volume"
+    assert manifest["config"]["preprocess"]["fixed"]["percentile_clip"] == [0.5, 99.5]
+    assert manifest["config"]["preprocess"]["fixed"]["normalize"] == "none"
 
 
 def test_the_configuration_object_is_not_mutated_by_a_run():
@@ -937,6 +1009,82 @@ def test_gates_flag_folding_and_divergence():
     assert result.status == "FAIL"
     names = {c.name for c in result.failures}
     assert {"ncc_gain", "dice[liver]", "folding_fraction", "translation_mm", "scale_deviation"} <= names
+
+
+def test_a_degenerate_stage_criterion_fails_the_gates():
+    """The gate that makes the whole "silent failure" class visible.
+
+    A stage can run, report success and optimise nothing: the transform stays plausible,
+    the similarity gain is ~0 (which passes the gain gate, since `gain < threshold` is
+    false for 0 < 0) and only the criterion betrays it. 6.7e-16 was the real value
+    measured when an internal pixel type quantised the intensities away.
+    """
+    from regix.config import QCGates
+    from regix.qc.gates import evaluate_gates
+
+    degenerate = evaluate_gates(
+        QCGates(min_ncc_gain=0.0),
+        similarity={"ncc_gain": 0.0},
+        stages=[{"stage": "affine", "final_metric": 6.66134e-16}],
+    )
+    assert degenerate.status == "FAIL"
+    assert any(c.name == "final_metric[affine]" and c.status == "FAIL" for c in degenerate.checks)
+
+    healthy = evaluate_gates(
+        QCGates(min_ncc_gain=0.0),
+        similarity={"ncc_gain": 0.42},
+        stages=[{"stage": "affine", "final_metric": -0.372217}],
+    )
+    assert healthy.status == "PASS"
+
+
+def test_a_zero_similarity_gain_is_not_reported_as_a_clean_pass():
+    """`gain < threshold` cannot separate "did nothing" from "improved" at threshold 0."""
+    from regix.config import QCGates
+    from regix.qc.gates import evaluate_gates
+
+    result = evaluate_gates(QCGates(min_ncc_gain=0.0), similarity={"ncc_gain": 0.0})
+    check = next(c for c in result.checks if c.name == "ncc_gain")
+    assert check.status == "WARN", "a strictly zero gain used to pass silently"
+
+
+def test_the_overlay_figure_moves_in_all_three_planes(ct_phantom, monkeypatch):
+    """Regression: only the axial index varied, so coronal and sagittal repeated.
+
+    Asserted at the call site, not on the helper: the bug was that `overlay_figure`
+    passed `centre[1]` and `centre[2]` unchanged for every slice, which no test of the
+    index generator could have caught. Three identical panels read as three checks.
+    """
+    from regix.qc import report
+
+    image, _ = ct_phantom
+    requested: list[tuple[int, int, int]] = []
+    original = report._extract_planes
+
+    def _spy(arr, index):
+        requested.append(tuple(index))
+        return original(arr, index)
+
+    monkeypatch.setattr(report, "_extract_planes", _spy)
+    report.overlay_figure(image, image, image, n_slices=3)
+
+    assert requested, "the figure rendered no plane"
+    for axis, name in enumerate(("axial (z)", "coronal (y)", "sagittal (x)")):
+        distinct = {index[axis] for index in requested}
+        assert len(distinct) >= 3, f"{name} index never moved: {sorted(distinct)}"
+
+
+def test_slice_positions_stay_inside_the_volume():
+    from regix.qc.report import _slice_positions_around
+
+    assert _slice_positions_around(centre=5, size=11, n=1) == [5]
+    # A centre near the edge must clamp, not wrap or go negative.
+    for index in _slice_positions_around(centre=0, size=40, n=5):
+        assert 0 <= index < 40
+    for index in _slice_positions_around(centre=39, size=40, n=5):
+        assert 0 <= index < 40
+    # ... and a tiny volume must not crash.
+    assert all(0 <= i < 2 for i in _slice_positions_around(centre=1, size=2, n=3))
 
 
 def test_a_missing_measurement_warns_rather_than_fails():
