@@ -86,6 +86,7 @@ def export_doctor_svg(out_dir: Path) -> Path:
     The command writes to the module-level ``console``; swapping in a recording one
     captures the real table rather than a re-implementation of it.
     """
+    import typer
     from rich.console import Console
 
     from regix import cli
@@ -95,8 +96,9 @@ def export_doctor_svg(out_dir: Path) -> Path:
     cli.console = recorder
     try:
         cli.doctor()
-    except SystemExit:
-        # `doctor` exits non-zero when the engine is missing; the table is already
+    except typer.Exit:
+        # `doctor` raises Exit(1) when the engine is missing. It is a RuntimeError,
+        # not a SystemExit, so it has to be named explicitly. The table is already
         # rendered by then, and that state is worth illustrating too.
         pass
     finally:

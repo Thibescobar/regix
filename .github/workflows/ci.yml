@@ -29,7 +29,9 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install ruff
-        run: pip install "ruff>=0.6"
+        # Pinned, and kept in step with the `dev` extra in pyproject.toml: an
+        # unpinned ruff makes this job fail on a release, not on a commit.
+        run: pip install "ruff>=0.16,<0.17"
       - name: Lint
         run: ruff check regix tests tools
       - name: Format check

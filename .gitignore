@@ -19,6 +19,8 @@
 
 # Output and data directories
 e2e_out/
+ci_out/
+ci_figures/
 regix_out*/
 regix_batch*/
 regix_masks*/

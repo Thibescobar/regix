@@ -58,7 +58,10 @@ organs = [
 ]
 totalsegmentator = ["TotalSegmentator>=2.2"]
 api = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
-dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6"]
+# ruff is pinned to a minor range, unlike the rest: it is the one tool whose new
+# releases add rules to the sets selected below, so an unpinned `ruff>=x` turns CI
+# red on a day nobody touched the code.
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.16,<0.17"]
 all = ["regix[features,organs,api,dev]"]
 
 [project.urls]
@@ -78,6 +81,12 @@ regix = ["presets/*.yaml", "qc/templates/*.html"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# The suites import shared phantom builders as `from tests.conftest import ...`, so
+# the repository root has to be importable. `python -m pytest` puts the working
+# directory on sys.path and hides the need for this; the bare `pytest` console
+# script does not, which is how CI runs it. Declaring it here makes both spellings
+# behave the same.
+pythonpath = ["."]
 markers = [
     "gpu: requires a GPU and torch",
     "slow: full registration, takes minutes",
@@ -95,6 +104,9 @@ ignore = [
     "UP045",
     "UP007",
     # `isinstance(x, (int, float))` stays clearer than the PEP 604 form here.
+    # Kept even though ruff removed UP038 in 0.14: recent versions merely warn that
+    # ignoring it is a no-op, while dropping the entry makes older ruff report three
+    # errors. Ignoring a rule that no longer exists is the portable spelling.
     "UP038",
 ]
 
