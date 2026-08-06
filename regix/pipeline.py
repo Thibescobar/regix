@@ -6,8 +6,9 @@ The sequence, and the reason for each step:
   2. organ segmentation -- before any preprocessing, on native intensities, because
      segmentation networks expect Hounsfield units;
   3. field-of-view overlap: a diagnosis, not a correction;
-  4. preprocessing (orientation, windowing, normalisation, working resolution):
-     for the optimisation only;
+  4. preprocessing (orientation, optional clipping, working resolution): for the
+     optimisation only, and scale-preserving -- what elastix receives keeps the
+     acquisition scale, see ``regix.preprocess.intensity``;
   5. per-organ ROI (optional): do not pay for a whole-body registration when only
      the pancreas matters;
   6. modality-invariant features (optional): makes a multimodal pair tractable as
@@ -21,8 +22,8 @@ The sequence, and the reason for each step:
 
 One rule runs through the whole file: **the output image is reconstructed from the
 original moving volume, not from the preprocessed one**. Otherwise the clinician
-receives a normalised, windowed, twice-resampled image -- and has lost the
-Hounsfield units.
+receives a clipped, twice-resampled image at the working resolution -- and has lost
+the Hounsfield units.
 """
 
 from __future__ import annotations
