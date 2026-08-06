@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import pathlib
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -10,6 +12,34 @@ import SimpleITK as sitk
 import yaml
 
 from tests.conftest import known_rigid, make_phantom
+
+
+@contextmanager
+def captured_logs(logger_name: str, level: int = logging.WARNING):
+    """Collect records from a Regix logger, whatever the global logging state.
+
+    Not `caplog`: that attaches to the root logger, and `setup_logging` sets
+    ``propagate = False`` on the "regix" logger, so any test that has already run a
+    pipeline leaves `caplog` blind. Attaching to the logger itself is order-independent
+    -- which matters, because the failure mode is a test that passes in isolation and
+    fails in the suite.
+    """
+    logger = logging.getLogger(logger_name)
+    records: list[logging.LogRecord] = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Collector(level=level)
+    previous = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(min(previous, level) if previous else level)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
 
 
 # --------------------------------------------------------------------------- #
@@ -256,6 +286,77 @@ def test_a_zoo_file_cannot_break_the_geometry_or_the_transform_chain(tmp_path):
         assert pmap[key] == value, key
     assert pmap["HowToCombineTransforms"] == ("Compose",)  # the file said "Add"
     assert pmap["WriteResultImage"] == ("false",)  # the file said "true"
+
+
+#: A real published zoo file, kept verbatim as a fixture. Generated files cannot stand
+#: in for it: this one carries `short` internal pixel types, an under-specified pyramid
+#: schedule and `AutomaticTransformInitialization true`, none of which Regix ever emits.
+_REAL_ZOO_FILE = pathlib.Path(__file__).parent / "data" / "Parameters.Par0008.affine.txt"
+
+
+def test_a_real_zoo_file_cannot_quantise_the_normalised_intensities():
+    """The failure this guards against is the worst kind: silent and plausible.
+
+    Zoo files are written for images read from disk in Hounsfield units, where
+    (FixedInternalImagePixelType "short") is the natural choice. Regix feeds elastix
+    min-max normalised floats in [0, 1], so `short` rounds every voxel to 0 or 1.
+    Measured on a CT-CT phantom with this very file: Mattes MI collapses to 6.7e-16,
+    the optimiser moves nothing, the transform error stays at the initial 5.87 mm --
+    and the run still reports WARN. Forcing float recovers the truth to 0.32 mm.
+    """
+    from regix.config import StageConfig, TransformType
+    from regix.registration.params import ParamContext, build_parameter_map
+
+    raw = _REAL_ZOO_FILE.read_text(encoding="utf-8")
+    assert '(FixedInternalImagePixelType "short")' in raw, "fixture no longer covers the case"
+
+    stage = StageConfig(type=TransformType.AFFINE, parameter_file=_REAL_ZOO_FILE)
+    pmap = build_parameter_map(stage, ParamContext())
+    assert pmap["FixedInternalImagePixelType"] == ("float",)
+    assert pmap["MovingInternalImagePixelType"] == ("float",)
+
+
+def test_a_real_zoo_file_keeps_its_own_tuning():
+    """Everything that is a genuine tuning choice survives, and the rest is reported."""
+    from regix.config import StageConfig, TransformType
+    from regix.registration.params import ParamContext, build_parameter_map
+
+    stage = StageConfig(type=TransformType.AFFINE, parameter_file=_REAL_ZOO_FILE)
+    with captured_logs("regix.registration.params") as records:
+        pmap = build_parameter_map(stage, ParamContext(dimension=3))
+
+    # The file's own choices, none of which Regix would generate.
+    assert pmap["Optimizer"] == ("StandardGradientDescent",)
+    assert pmap["ImageSampler"] == ("RandomSparseMask",)
+    assert pmap["FixedImagePyramid"] == ("FixedRecursiveImagePyramid",)
+    assert pmap["Metric"] == ("AdvancedMattesMutualInformation",)
+    assert pmap["SP_a"] == ("500.0",) and pmap["SP_alpha"] == ("0.602",)
+    assert pmap["NumberOfSpatialSamples"] == ("5000",)
+    assert pmap["FinalBSplineInterpolationOrder"] == ("0",)
+    assert pmap["ErodeMask"] == ("false",)
+
+    # UseDirectionCosines is absent from the file; its elastix default is false.
+    assert pmap["UseDirectionCosines"] == ("true",)
+
+    messages = " | ".join(r.getMessage() for r in records)
+    assert "AutomaticTransformInitialization" in messages
+    # 5 values for 4 resolutions in 3D: elastix silently falls back to its default
+    # schedule, so the file's intended pyramid is not the one that runs.
+    assert "ImagePyramidSchedule" in messages
+
+
+def test_extra_accepts_a_numeric_list():
+    """YAML parses `[8, 8, 8]` as ints; refusing them was a pointless papercut."""
+    from regix.config import StageConfig, TransformType
+    from regix.registration.params import ParamContext, build_parameter_map
+
+    stage = StageConfig(
+        type=TransformType.RIGID,
+        n_resolutions=2,  # 2 resolutions x 3 dimensions = the 6 values below
+        extra={"ImagePyramidSchedule": [8, 8, 8, 1, 1, 1]},
+    )
+    pmap = build_parameter_map(stage, ParamContext(dimension=3))
+    assert pmap["ImagePyramidSchedule"] == ("8", "8", "8", "1", "1", "1")
 
 
 def test_extra_still_overrides_a_parameter_file(tmp_path):

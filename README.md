@@ -316,21 +316,29 @@ stages:
 ```
 
 The file is used verbatim: its optimizer, samplers, pyramids, schedules and metric
-weights are all honoured, and Regix bolts nothing on. Four keys are re-imposed, with a
+weights are all honoured, and Regix bolts nothing on. Six keys are re-imposed, with a
 warning in the log, and they are not tuning knobs — each one silently invalidates the
 pipeline around the file rather than changing the optimisation:
 
-| Key | Forced to | What omitting it does |
+| Key | Forced to | What honouring the file would do |
 |---|---|---|
+| `Fixed`/`MovingInternalImagePixelType` | `float` | zoo files assume images read from disk in Hounsfield units, where `short` is natural. Regix feeds elastix **min-max normalised floats in [0, 1]**, so an integer internal type rounds every voxel to 0 or 1. Measured with `Par0008.affine.txt` on a CT-CT phantom: Mattes MI collapses to `6.7e-16`, the optimiser moves nothing, the error stays at the initial 5.87 mm — and the run still reports `WARN`. Forced to `float`: **0.32 mm** |
 | `UseDirectionCosines` | `true` | its elastix default is `false`, which misregisters every oblique acquisition with no warning — and most zoo files predate the parameter |
 | `HowToCombineTransforms` | `Compose` | the `-t0` chain, `compose()` and the 4x4 export are all written for Compose; `Add` makes the composition arithmetic wrong |
 | `AutomaticTransformInitialization` | `false` | Regix computes and records its own initialisation; a second one makes the reported transform disagree with the applied one |
 | `WriteResultImage` | `false` | Regix resamples the *native* moving intensities itself and never reads elastix's output |
 
-Two mismatches are refused outright rather than warned about, because both produce a
-plausible wrong answer: a `type:` that disagrees with the file's transform (Regix reads
-`type` to decide whether a stage result is a linear transform it can decompose), and a
-file whose dimension does not match the pair.
+The first row is the reason this list exists at all: a parameter map can be perfectly
+valid and still produce a plausible, wrong, `WARN`-status result. It is guarded by an
+end-to-end test on that real file, not by an assertion on a dictionary.
+
+Two mismatches are refused outright rather than warned about, because both also produce
+a plausible wrong answer: a `type:` that disagrees with the file's transform (Regix
+reads `type` to decide whether a stage result is a linear transform it can decompose),
+and a file whose dimension does not match the pair. Anything elastix itself handles
+gracefully is only reported — an `ImagePyramidSchedule` with the wrong number of values,
+for instance, makes elastix fall back to its default schedule, which is correct but
+means the file's intended pyramid is not the one that ran.
 
 **Quality control**, in decreasing order of reliability:
 

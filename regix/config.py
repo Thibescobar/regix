@@ -286,9 +286,14 @@ class StageConfig(BaseModel):
             "regix.registration.params.ENFORCED_WITH_PARAMETER_FILE."
         ),
     )
-    extra: dict[str, list[str] | str | float | int] = Field(
+    extra: dict[str, list[str | float | int] | str | float | int] = Field(
         default_factory=dict,
-        description="Raw elastix parameter overrides, e.g. {'MaximumStepLength': '2.0'}.",
+        description=(
+            "Raw elastix parameter overrides, e.g. {'MaximumStepLength': '2.0'} or "
+            "{'ImagePyramidSchedule': [8, 8, 8, 4, 4, 4, 2, 2, 2, 1, 1, 1]}. Values are "
+            "stringified on the way out, so numbers need no quoting -- which matters "
+            "because YAML parses a numeric list as ints."
+        ),
     )
     label: str | None = None
 

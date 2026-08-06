@@ -137,6 +137,45 @@ def test_a_zoo_parameter_file_drives_a_real_registration(tmp_path, rigid_pair):
     assert '(WriteResultImage "false")' in effective  # the file said "true"
 
 
+def test_a_real_zoo_file_registers_correctly(tmp_path, rigid_pair):
+    """The end-to-end guard on the internal-pixel-type enforcement.
+
+    `Parameters.Par0008.affine.txt` declares (FixedInternalImagePixelType "short"),
+    which is right for HU images read from disk and catastrophic for the normalised
+    [0, 1] floats Regix hands elastix: every voxel rounds to 0 or 1 and Mattes MI drops
+    to 6.7e-16, so the optimiser does nothing while the run still reports WARN. Only a
+    real registration catches that, because the parameter map is perfectly valid either
+    way -- which is exactly why this test asserts the recovered transform and not the
+    contents of a dictionary.
+    """
+    import pathlib
+
+    from regix.pipeline import RegistrationPipeline
+
+    zoo = pathlib.Path(__file__).parent / "data" / "Parameters.Par0008.affine.txt"
+    paths, truth = rigid_pair
+    cfg = _config(
+        tmp_path,
+        stages=[{"type": "affine", "parameter_file": str(zoo)}],
+        deformable_engine="none",
+    )
+    result = RegistrationPipeline(cfg).run(paths["fixed"], paths["moving"], tmp_path / "out")
+
+    transform = result.applied_transform.as_sitk_transform()
+    assert transform is not None
+    error = _transform_error(transform, truth, sitk.ReadImage(str(paths["fixed"])))
+    assert error < 1.5, f"zoo-driven affine off by {error:.2f} mm (2 mm voxel)"
+
+    # A degenerate criterion is the symptom of the quantisation bug: MI on a binarised
+    # image is ~0, and the stage reports it without failing.
+    criterion = result.stages[0]["final_metric"]
+    assert criterion is not None and abs(criterion) > 1e-3, (
+        f"criterion {criterion} is degenerate: the intensities were probably quantised"
+    )
+    similarity = result.metrics["similarity"]
+    assert similarity["ncc_after"] > similarity["ncc_before"]
+
+
 def test_output_keeps_native_intensities(tmp_path, rigid_pair):
     """The delivered volume keeps its HU: it is not normalised by the preprocessing."""
     from regix.pipeline import RegistrationPipeline

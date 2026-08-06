@@ -99,12 +99,22 @@ _MODALITY_FAMILIES = {"CT": "CT", "CBCT": "CT", "MR": "MR", "PT": "PT", "NM": "P
 #:   disagree with the one that was applied;
 #: * ``WriteResultImage``: Regix never reads elastix's resampled output -- it resamples
 #:   the *native* moving intensities onto the original fixed grid itself. Leaving this
-#:   true only costs a resample and a write per stage.
+#:   true only costs a resample and a write per stage;
+#: * ``Fixed/MovingInternalImagePixelType``: this is the one that hurts. Published zoo
+#:   files are written for images read from disk in Hounsfield units, where ``"short"``
+#:   is the natural internal type. Regix hands elastix min-max **normalised floats in
+#:   [0, 1]** (and float feature channels), so an integer internal type rounds every
+#:   voxel to 0 or 1. Measured on a CT-CT phantom with Par0008.affine.txt: honouring
+#:   ``"short"`` collapses Mattes MI to 6.7e-16 -- no information left at all -- the
+#:   optimiser does nothing, and the run still reports WARN with a plausible-looking
+#:   transform. Forcing ``"float"`` on the same pair recovers the truth to 0.32 mm.
 ENFORCED_WITH_PARAMETER_FILE: dict[str, tuple[str, ...]] = {
     "UseDirectionCosines": ("true",),
     "HowToCombineTransforms": ("Compose",),
     "AutomaticTransformInitialization": ("false",),
     "WriteResultImage": ("false",),
+    "FixedInternalImagePixelType": ("float",),
+    "MovingInternalImagePixelType": ("float",),
 }
 
 
@@ -402,6 +412,20 @@ def _validate(pmap: ParameterMap, dimension: int | None = None) -> None:
     if "GridSpacingSchedule" in pmap and len(pmap["GridSpacingSchedule"]) not in (n_res, n_res * 3):
         raise ValueError(
             f"GridSpacingSchedule has {len(pmap['GridSpacingSchedule'])} values for {n_res} resolutions"
+        )
+    # A warning, not a refusal: elastix has a documented fallback here ("the pyramid
+    # schedule is not fully specified! A default pyramid schedule is used") and the
+    # result stays correct. But it says so in elastix.log, which nobody reads, and it
+    # means the file's intended pyramid is not the one that ran -- worth one line.
+    schedule = pmap.get("ImagePyramidSchedule")
+    if schedule is not None and dimension is not None and len(schedule) != n_res * dimension:
+        log.warning(
+            "ImagePyramidSchedule has %d values for %d resolutions in %dD (expected %d): "
+            "elastix will ignore it and use its default schedule",
+            len(schedule),
+            n_res,
+            dimension,
+            n_res * dimension,
         )
     if dimension is not None:
         for key in ("FixedImageDimension", "MovingImageDimension"):
