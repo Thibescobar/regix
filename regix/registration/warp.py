@@ -36,12 +36,10 @@ class AppliedTransform(ABC):
         reference: sitk.Image,
         is_label: bool = False,
         default_value: float | None = None,
-    ) -> sitk.Image:
-        ...
+    ) -> sitk.Image: ...
 
     @abstractmethod
-    def displacement_field(self, reference: sitk.Image) -> sitk.Image | None:
-        ...
+    def displacement_field(self, reference: sitk.Image) -> sitk.Image | None: ...
 
     @abstractmethod
     def transform_points(self, points: np.ndarray) -> np.ndarray | None:
@@ -146,9 +144,7 @@ class SitkAppliedTransform(AppliedTransform):
         return displacement_field_from_transform(self.transform, reference)
 
     def transform_points(self, points):
-        return np.asarray(
-            [self.transform.TransformPoint([float(v) for v in p]) for p in points], dtype=float
-        )
+        return np.asarray([self.transform.TransformPoint([float(v) for v in p]) for p in points], dtype=float)
 
     def as_sitk_transform(self):
         return self.transform
@@ -190,6 +186,4 @@ def warp_landmarks_moving_to_fixed(
     except Exception as exc:
         log.warning("inversion failed: %s", exc)
         return None
-    return np.asarray(
-        [inverse.TransformPoint([float(v) for v in p]) for p in points_moving], dtype=float
-    )
+    return np.asarray([inverse.TransformPoint([float(v) for v in p]) for p in points_moving], dtype=float)

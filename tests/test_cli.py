@@ -46,8 +46,7 @@ def _run(*args: str):
     result = runner.invoke(app, list(args))
     if result.exit_code not in (0, 2):  # 2 = QC FAIL, a legitimate outcome
         raise AssertionError(
-            f"regix {' '.join(args)} exited with {result.exit_code}\n"
-            f"{result.output}\n{result.exception!r}"
+            f"regix {' '.join(args)} exited with {result.exit_code}\n{result.output}\n{result.exception!r}"
         )
     return result
 
@@ -100,10 +99,20 @@ def test_register_writes_every_expected_output(tmp_path, phantom_pair):
     paths, truth = phantom_pair
     out = tmp_path / "out"
     result = _run(
-        "register", str(paths["fixed"]), str(paths["moving"]),
-        "-o", str(out),
-        "--fixed-modality", "CT", "--moving-modality", "CT",
-        "--spacing", "2.5", "--overwrite", "--log-level", "WARNING",
+        "register",
+        str(paths["fixed"]),
+        str(paths["moving"]),
+        "-o",
+        str(out),
+        "--fixed-modality",
+        "CT",
+        "--moving-modality",
+        "CT",
+        "--spacing",
+        "2.5",
+        "--overwrite",
+        "--log-level",
+        "WARNING",
     )
     assert "PASS" in result.output or "WARN" in result.output
 
@@ -133,8 +142,12 @@ def test_dry_run_prints_the_configuration_without_computing(tmp_path, phantom_pa
     paths, _ = phantom_pair
     out = tmp_path / "never_created"
     result = _run(
-        "register", str(paths["fixed"]), str(paths["moving"]),
-        "-o", str(out), "--dry-run",
+        "register",
+        str(paths["fixed"]),
+        str(paths["moving"]),
+        "-o",
+        str(out),
+        "--dry-run",
     )
     assert "stages" in result.output
     assert "working_spacing_mm" in result.output
@@ -144,8 +157,13 @@ def test_dry_run_prints_the_configuration_without_computing(tmp_path, phantom_pa
 def test_rigid_only_removes_the_other_stages(tmp_path, phantom_pair):
     paths, _ = phantom_pair
     result = _run(
-        "register", str(paths["fixed"]), str(paths["moving"]),
-        "-o", str(tmp_path / "out"), "--rigid-only", "--dry-run",
+        "register",
+        str(paths["fixed"]),
+        str(paths["moving"]),
+        "-o",
+        str(tmp_path / "out"),
+        "--rigid-only",
+        "--dry-run",
     )
     assert result.output.count("type: rigid") == 1
     assert "type: affine" not in result.output
@@ -155,8 +173,13 @@ def test_rigid_only_removes_the_other_stages(tmp_path, phantom_pair):
 def test_deformable_flag_appends_a_bspline_stage(tmp_path, phantom_pair):
     paths, _ = phantom_pair
     result = _run(
-        "register", str(paths["fixed"]), str(paths["moving"]),
-        "-o", str(tmp_path / "out"), "--deformable", "--dry-run",
+        "register",
+        str(paths["fixed"]),
+        str(paths["moving"]),
+        "-o",
+        str(tmp_path / "out"),
+        "--deformable",
+        "--dry-run",
     )
     assert "type: bspline" in result.output
     assert "deformable_engine: elastix" in result.output
@@ -165,10 +188,16 @@ def test_deformable_flag_appends_a_bspline_stage(tmp_path, phantom_pair):
 def test_set_overrides_reach_the_configuration(tmp_path, phantom_pair):
     paths, _ = phantom_pair
     result = _run(
-        "register", str(paths["fixed"]), str(paths["moving"]),
-        "-o", str(tmp_path / "out"), "--dry-run",
-        "--set", "preprocess.working_spacing_mm=1.25",
-        "--set", "stages.0.max_iterations=999",
+        "register",
+        str(paths["fixed"]),
+        str(paths["moving"]),
+        "-o",
+        str(tmp_path / "out"),
+        "--dry-run",
+        "--set",
+        "preprocess.working_spacing_mm=1.25",
+        "--set",
+        "stages.0.max_iterations=999",
     )
     assert "working_spacing_mm: 1.25" in result.output
     assert "max_iterations: 999" in result.output
@@ -178,8 +207,16 @@ def test_invalid_set_is_rejected(tmp_path, phantom_pair):
     paths, _ = phantom_pair
     result = runner.invoke(
         app,
-        ["register", str(paths["fixed"]), str(paths["moving"]),
-         "-o", str(tmp_path / "out"), "--dry-run", "--set", "nonsense"],
+        [
+            "register",
+            str(paths["fixed"]),
+            str(paths["moving"]),
+            "-o",
+            str(tmp_path / "out"),
+            "--dry-run",
+            "--set",
+            "nonsense",
+        ],
     )
     assert result.exit_code != 0, "--set without '=' must be rejected"
 
@@ -191,15 +228,30 @@ def test_organ_targets_and_masks_are_forwarded(tmp_path, phantom_pair):
 
     out = tmp_path / "out"
     result = _run(
-        "register", str(paths["fixed"]), str(paths["moving"]),
-        "-o", str(out),
-        "--fixed-modality", "CT", "--moving-modality", "CT",
-        "--organ", "liver",
-        "--fixed-mask", str(paths["fixed_labels"]),
-        "--moving-mask", str(paths["moving_labels"]),
-        "--labels", str(labels_json),
-        "--init", "organ_centroid",
-        "--spacing", "2.5", "--overwrite", "--log-level", "WARNING",
+        "register",
+        str(paths["fixed"]),
+        str(paths["moving"]),
+        "-o",
+        str(out),
+        "--fixed-modality",
+        "CT",
+        "--moving-modality",
+        "CT",
+        "--organ",
+        "liver",
+        "--fixed-mask",
+        str(paths["fixed_labels"]),
+        "--moving-mask",
+        str(paths["moving_labels"]),
+        "--labels",
+        str(labels_json),
+        "--init",
+        "organ_centroid",
+        "--spacing",
+        "2.5",
+        "--overwrite",
+        "--log-level",
+        "WARNING",
     )
     assert "Dice liver" in result.output, result.output
     manifest = json.loads((out / "run_manifest.json").read_text(encoding="utf-8"))
@@ -217,8 +269,19 @@ def test_existing_output_directory_is_protected(tmp_path, phantom_pair):
 
     result = runner.invoke(
         app,
-        ["register", str(paths["fixed"]), str(paths["moving"]), "-o", str(out),
-         "--fixed-modality", "CT", "--moving-modality", "CT", "--log-level", "ERROR"],
+        [
+            "register",
+            str(paths["fixed"]),
+            str(paths["moving"]),
+            "-o",
+            str(out),
+            "--fixed-modality",
+            "CT",
+            "--moving-modality",
+            "CT",
+            "--log-level",
+            "ERROR",
+        ],
     )
     assert result.exit_code != 0
     assert (out / "precious.txt").exists()
@@ -231,15 +294,32 @@ def test_apply_propagates_a_label_map(tmp_path, phantom_pair):
     paths, _ = phantom_pair
     out = tmp_path / "out"
     _run(
-        "register", str(paths["fixed"]), str(paths["moving"]),
-        "-o", str(out), "--fixed-modality", "CT", "--moving-modality", "CT",
-        "--spacing", "2.5", "--overwrite", "--log-level", "WARNING",
+        "register",
+        str(paths["fixed"]),
+        str(paths["moving"]),
+        "-o",
+        str(out),
+        "--fixed-modality",
+        "CT",
+        "--moving-modality",
+        "CT",
+        "--spacing",
+        "2.5",
+        "--overwrite",
+        "--log-level",
+        "WARNING",
     )
 
     warped = tmp_path / "labels_on_fixed.nii.gz"
     _run(
-        "apply", str(out / "transform" / "final_transform.tfm"), str(paths["moving_labels"]),
-        "--reference", str(paths["fixed"]), "-o", str(warped), "--label",
+        "apply",
+        str(out / "transform" / "final_transform.tfm"),
+        str(paths["moving_labels"]),
+        "--reference",
+        str(paths["fixed"]),
+        "-o",
+        str(warped),
+        "--label",
     )
     assert warped.exists()
 
@@ -263,10 +343,18 @@ def test_batch_produces_a_summary(tmp_path, phantom_pair):
 
     out = tmp_path / "batch"
     result = _run(
-        "batch", str(csv_path), "-o", str(out),
-        "--set", "preprocess.working_spacing_mm=3.0",
-        "--set", "fixed_modality=CT", "--set", "moving_modality=CT",
-        "--log-level", "ERROR",
+        "batch",
+        str(csv_path),
+        "-o",
+        str(out),
+        "--set",
+        "preprocess.working_spacing_mm=3.0",
+        "--set",
+        "fixed_modality=CT",
+        "--set",
+        "moving_modality=CT",
+        "--log-level",
+        "ERROR",
     )
     assert "case_a" in result.output and "case_b" in result.output
 
@@ -305,10 +393,24 @@ def test_qc_failure_exits_with_a_distinct_code(tmp_path):
 
     result = runner.invoke(
         app,
-        ["register", str(fixed_path), str(moving_path), "-o", str(tmp_path / "out"),
-         "--fixed-modality", "CT", "--moving-modality", "CT", "--spacing", "3.0",
-         "--overwrite", "--log-level", "ERROR",
-         "--set", "qc.gates.min_ncc_gain=0.05"],
+        [
+            "register",
+            str(fixed_path),
+            str(moving_path),
+            "-o",
+            str(tmp_path / "out"),
+            "--fixed-modality",
+            "CT",
+            "--moving-modality",
+            "CT",
+            "--spacing",
+            "3.0",
+            "--overwrite",
+            "--log-level",
+            "ERROR",
+            "--set",
+            "qc.gates.min_ncc_gain=0.05",
+        ],
     )
     assert result.exit_code == 2, f"expected exit code 2, got {result.exit_code}\n{result.output}"
     assert "FAIL" in result.output

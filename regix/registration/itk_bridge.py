@@ -75,9 +75,7 @@ def sitk_to_itk(image: sitk.Image, as_mask: bool = False):
     out = itk.GetImageFromArray(np.ascontiguousarray(array))
     out.SetSpacing([float(v) for v in image.GetSpacing()])
     out.SetOrigin([float(v) for v in image.GetOrigin()])
-    out.SetDirection(
-        itk.matrix_from_array(np.asarray(image.GetDirection(), dtype=float).reshape(3, 3))
-    )
+    out.SetDirection(itk.matrix_from_array(np.asarray(image.GetDirection(), dtype=float).reshape(3, 3)))
     return out
 
 
@@ -88,9 +86,7 @@ def itk_to_sitk(image, is_vector: bool = False) -> sitk.Image:
     out = sitk.GetImageFromArray(np.ascontiguousarray(array), isVector=is_vector)
     out.SetSpacing([float(v) for v in image.GetSpacing()])
     out.SetOrigin([float(v) for v in image.GetOrigin()])
-    out.SetDirection(
-        [float(v) for v in np.asarray(itk.array_from_matrix(image.GetDirection())).reshape(-1)]
-    )
+    out.SetDirection([float(v) for v in np.asarray(itk.array_from_matrix(image.GetDirection())).reshape(-1)])
     return out
 
 

@@ -151,8 +151,10 @@ def write_derived_dicom(
 
     study_uid = getattr(template, "StudyInstanceUID", None) or generate_uid(prefix=REGIX_UID_ROOT + ".")
     series_uid = generate_uid(prefix=REGIX_UID_ROOT + ".")
-    for_uid = frame_of_reference_uid or getattr(template, "FrameOfReferenceUID", None) or generate_uid(
-        prefix=REGIX_UID_ROOT + "."
+    for_uid = (
+        frame_of_reference_uid
+        or getattr(template, "FrameOfReferenceUID", None)
+        or generate_uid(prefix=REGIX_UID_ROOT + ".")
     )
     now = _dt.datetime.now()
 

@@ -252,19 +252,32 @@ def test_spatial_registration_object_is_valid(tmp_path):
 
     # Item 0 = the fixed image, identity. Item 1 = the moving image with the matrix.
     identity = np.array(
-        [float(v) for v in ds.RegistrationSequence[0].MatrixRegistrationSequence[0]
-         .MatrixSequence[0].FrameOfReferenceTransformationMatrix]
+        [
+            float(v)
+            for v in ds.RegistrationSequence[0]
+            .MatrixRegistrationSequence[0]
+            .MatrixSequence[0]
+            .FrameOfReferenceTransformationMatrix
+        ]
     ).reshape(4, 4)
     assert np.allclose(identity, np.eye(4))
 
     written = np.array(
-        [float(v) for v in ds.RegistrationSequence[1].MatrixRegistrationSequence[0]
-         .MatrixSequence[0].FrameOfReferenceTransformationMatrix]
+        [
+            float(v)
+            for v in ds.RegistrationSequence[1]
+            .MatrixRegistrationSequence[0]
+            .MatrixSequence[0]
+            .FrameOfReferenceTransformationMatrix
+        ]
     ).reshape(4, 4)
     assert np.allclose(written, matrix, atol=1e-6)
     assert (
-        ds.RegistrationSequence[1].MatrixRegistrationSequence[0].MatrixSequence[0]
-        .FrameOfReferenceTransformationMatrixType == "RIGID"
+        ds.RegistrationSequence[1]
+        .MatrixRegistrationSequence[0]
+        .MatrixSequence[0]
+        .FrameOfReferenceTransformationMatrixType
+        == "RIGID"
     )
 
 
@@ -276,7 +289,10 @@ def test_registration_from_dicom_series_end_to_end(tmp_path):
     write_ct_series(tmp_path / "fixed", n_slices=16, rows=48, columns=48)
     # The moving series is shifted by one slice plus an in-plane offset.
     write_ct_series(
-        tmp_path / "moving", n_slices=16, rows=48, columns=48,
+        tmp_path / "moving",
+        n_slices=16,
+        rows=48,
+        columns=48,
         origin=(-9.0, -18.0, 42.5),
     )
 

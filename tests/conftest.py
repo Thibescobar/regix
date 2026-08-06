@@ -42,19 +42,23 @@ def make_phantom(
     """
     rng = np.random.default_rng(seed)
     body = _ellipsoid(
-        shape, (shape[0] / 2, shape[1] / 2, shape[2] / 2),
+        shape,
+        (shape[0] / 2, shape[1] / 2, shape[2] / 2),
         (shape[0] * 0.42, shape[1] * 0.40, shape[2] * 0.44),
     )
     liver = _ellipsoid(
-        shape, (shape[0] * 0.45, shape[1] * 0.42, shape[2] * 0.36),
+        shape,
+        (shape[0] * 0.45, shape[1] * 0.42, shape[2] * 0.36),
         (shape[0] * 0.20, shape[1] * 0.17, shape[2] * 0.15),
     )
     spleen = _ellipsoid(
-        shape, (shape[0] * 0.50, shape[1] * 0.45, shape[2] * 0.66),
+        shape,
+        (shape[0] * 0.50, shape[1] * 0.45, shape[2] * 0.66),
         (shape[0] * 0.11, shape[1] * 0.10, shape[2] * 0.08),
     )
     kidney = _ellipsoid(
-        shape, (shape[0] * 0.62, shape[1] * 0.62, shape[2] * 0.60),
+        shape,
+        (shape[0] * 0.62, shape[1] * 0.62, shape[2] * 0.60),
         (shape[0] * 0.09, shape[1] * 0.08, shape[2] * 0.07),
     )
 

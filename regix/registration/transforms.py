@@ -217,9 +217,7 @@ def transform_to_elastix_initial(
 # --------------------------------------------------------------------------- #
 # Analysis
 # --------------------------------------------------------------------------- #
-def linear_matrix_from_transform(
-    transform: sitk.Transform, tolerance_mm: float = 1e-3
-) -> np.ndarray | None:
+def linear_matrix_from_transform(transform: sitk.Transform, tolerance_mm: float = 1e-3) -> np.ndarray | None:
     """Numerically extract the 4x4 matrix of **any linear** transform.
 
     Indispensable for the compositions (initialization + probe rotation) that

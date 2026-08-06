@@ -78,9 +78,7 @@ def pseudonymize(value: str | None, salt: str | None = None, length: int = 10) -
     return digest[:length]
 
 
-def file_digest(
-    path: str | os.PathLike[str], chunk: int = 1 << 20, max_bytes: int | None = None
-) -> str:
+def file_digest(path: str | os.PathLike[str], chunk: int = 1 << 20, max_bytes: int | None = None) -> str:
     """SHA-256 of a file (truncatable for large volumes: then prefixed with 'partial:')."""
     h = hashlib.sha256()
     read = 0

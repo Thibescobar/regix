@@ -236,7 +236,10 @@ class TotalSegmentatorSegmenter(OrganSegmenter):
             self._run(ct, out)
             lm, names = ExternalSegmenter._from_directory(out)
             seg = OrganSegmentation(
-                lm, names, self.name, source=f"totalsegmentator:{self.task}",
+                lm,
+                names,
+                self.name,
+                source=f"totalsegmentator:{self.task}",
                 info={"task": self.task, "fast": self.fast},
             )
             if not _same_grid(lm, volume.image):

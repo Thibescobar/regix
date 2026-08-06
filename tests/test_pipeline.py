@@ -181,9 +181,7 @@ def test_output_keeps_native_intensities(tmp_path, rigid_pair):
     from regix.pipeline import RegistrationPipeline
 
     paths, _ = rigid_pair
-    result = RegistrationPipeline(_config(tmp_path)).run(
-        paths["fixed"], paths["moving"], tmp_path / "out"
-    )
+    result = RegistrationPipeline(_config(tmp_path)).run(paths["fixed"], paths["moving"], tmp_path / "out")
     arr = sitk.GetArrayViewFromImage(result.registered_image)
     assert arr.min() < -500, "air HU must survive (preprocessing is not applied to the output)"
     assert arr.max() > 50
@@ -372,9 +370,7 @@ def test_slicer_readable_transforms(tmp_path, rigid_pair):
     from regix.pipeline import RegistrationPipeline
 
     paths, truth = rigid_pair
-    result = RegistrationPipeline(_config(tmp_path)).run(
-        paths["fixed"], paths["moving"], tmp_path / "out"
-    )
+    result = RegistrationPipeline(_config(tmp_path)).run(paths["fixed"], paths["moving"], tmp_path / "out")
     transform_dir = result.outputs["transform_dir"]
     assert (transform_dir / "stage00_rigid.txt").exists()
     assert (transform_dir / "stage01_affine.txt").exists()

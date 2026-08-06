@@ -82,7 +82,7 @@ def test_preset_inheritance_replaces_stages():
     base = load_preset("base")
     child = load_preset("ct_cbct_igrt")
     assert len(base.stages) == 2
-    assert len(child.stages) == 1           # the child replaces, it does not concatenate
+    assert len(child.stages) == 1  # the child replaces, it does not concatenate
     assert child.preprocess.fixed.window == "ct_bone"
     assert child.preprocess.orientation == base.preprocess.orientation  # inherited
 
@@ -412,7 +412,7 @@ def test_a_parameter_file_of_the_wrong_dimension_is_refused(tmp_path):
     path = tmp_path / "twod.txt"
     path.write_text(
         '(Transform "EulerTransform")\n(Metric "AdvancedNormalizedCorrelation")\n'
-        '(NumberOfResolutions 3)\n(FixedImageDimension 2)\n',
+        "(NumberOfResolutions 3)\n(FixedImageDimension 2)\n",
         encoding="utf-8",
     )
     stage = StageConfig(type=TransformType.RIGID, parameter_file=path)
@@ -455,9 +455,7 @@ def test_describe_stage_reports_the_effective_value_not_the_requested_one():
     from regix.config import StageConfig, TransformType
     from regix.registration.params import ParamContext, build_parameter_map, describe_stage
 
-    stage = StageConfig(
-        type=TransformType.RIGID, n_resolutions=4, extra={"NumberOfResolutions": 2}
-    )
+    stage = StageConfig(type=TransformType.RIGID, n_resolutions=4, extra={"NumberOfResolutions": 2})
     ctx = ParamContext()
     described = describe_stage(stage, ctx, build_parameter_map(stage, ctx))
     assert described["resolutions"] == 2, "the manifest reported the request, not the run"
@@ -755,9 +753,7 @@ def test_mask_centre_of_mass_is_its_barycentre(ct_phantom):
     com = center_of_mass_physical(image, liver)
     arr = sitk.GetArrayViewFromImage(liver)
     idx = np.argwhere(arr > 0).mean(axis=0)
-    expected = labels.TransformContinuousIndexToPhysicalPoint(
-        [float(idx[2]), float(idx[1]), float(idx[0])]
-    )
+    expected = labels.TransformContinuousIndexToPhysicalPoint([float(idx[2]), float(idx[1]), float(idx[0])])
     assert np.allclose(com, expected, atol=1e-6)
 
 

@@ -27,9 +27,9 @@ class Volume:
 
     image: sitk.Image
     modality: str = "UNKNOWN"
-    role: str = "image"                       # image | mask | labelmap | features
+    role: str = "image"  # image | mask | labelmap | features
     source: Path | None = None
-    subject_id: str = "unknown"               # pseudonymised when runtime.pseudonymize
+    subject_id: str = "unknown"  # pseudonymised when runtime.pseudonymize
     series_uid: str | None = None
     meta: dict[str, Any] = field(default_factory=dict)
 

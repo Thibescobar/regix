@@ -119,12 +119,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Output directory of a completed registration (must contain report.html).",
     )
     parser.add_argument("-o", "--out-dir", type=Path, default=Path("docs/images"))
-    parser.add_argument(
-        "--skip-doctor", action="store_true", help="Only extract the QC figures."
-    )
-    parser.add_argument(
-        "--max-width", type=int, default=950, help="Downscale figures wider than this."
-    )
+    parser.add_argument("--skip-doctor", action="store_true", help="Only extract the QC figures.")
+    parser.add_argument("--max-width", type=int, default=950, help="Downscale figures wider than this.")
     args = parser.parse_args(argv)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)

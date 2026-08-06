@@ -246,8 +246,7 @@ class RegistrationPipeline:
         manifest.metrics["fov"] = overlap
         if min(overlap["fov_overlap_fraction_fixed"], overlap["fov_overlap_fraction_moving"]) < 0.25:
             manifest.warn(
-                "field-of-view overlap below 25 %: organ-based initialization is strongly "
-                "recommended"
+                "field-of-view overlap below 25 %: organ-based initialization is strongly recommended"
             )
 
         # -- 4. preprocessing ------------------------------------------------ #
@@ -258,9 +257,9 @@ class RegistrationPipeline:
         prep_fixed = resolve_prep(cfg.preprocess.fixed, fixed.modality, "fixed")
         prep_moving = resolve_prep(cfg.preprocess.moving, moving.modality, "moving")
         effective = cfg.model_copy(
-            update={"preprocess": cfg.preprocess.model_copy(
-                update={"fixed": prep_fixed, "moving": prep_moving}
-            )}
+            update={
+                "preprocess": cfg.preprocess.model_copy(update={"fixed": prep_fixed, "moving": prep_moving})
+            }
         )
         manifest.config = effective.model_dump(mode="json")
         with manifest.step("preprocessing") as info:
@@ -326,9 +325,7 @@ class RegistrationPipeline:
                     candidate.transform, fixed_work.image, out_dir / "elastix" / "initial_transform.txt"
                 )
             if init_report.get("ambiguous"):
-                manifest.warn(
-                    "several equivalent initializations: verify the result visually"
-                )
+                manifest.warn("several equivalent initializations: verify the result visually")
 
         # -- 9. elastix stages ----------------------------------------------- #
         engine = ElastixEngine(
@@ -367,9 +364,7 @@ class RegistrationPipeline:
         # covers the B-spline case, which removes any dependency on transformix for
         # resampling, the Jacobian and point transport.
         if outcome.final_transform is not None:
-            applied: AppliedTransform = SitkAppliedTransform(
-                outcome.final_transform, label="elastix_chain"
-            )
+            applied: AppliedTransform = SitkAppliedTransform(outcome.final_transform, label="elastix_chain")
         else:
             manifest.warn(
                 "combination transform not convertible: outputs go through transformix "
@@ -433,9 +428,7 @@ class RegistrationPipeline:
 
         # -- 13. transforms and exports -------------------------------------- #
         with manifest.step("exports") as info:
-            self._export_transforms(
-                applied, outcome, fixed, moving, out_dir, outputs, candidate.transform
-            )
+            self._export_transforms(applied, outcome, fixed, moving, out_dir, outputs, candidate.transform)
             if cfg.output.write_dicom:
                 self._export_dicom(registered, fixed, moving, applied, out_dir, outputs, manifest)
             # `effective`, not `self.config`: the file has to describe the run that
@@ -503,9 +496,7 @@ class RegistrationPipeline:
             if modality:
                 volume.modality = modality.upper()
         else:
-            volume = load_volume(
-                source, modality=modality, pseudonymize_ids=self.config.runtime.pseudonymize
-            )
+            volume = load_volume(source, modality=modality, pseudonymize_ids=self.config.runtime.pseudonymize)
         log.info("%s volume: %r", side, volume)
         if volume.modality == "UNKNOWN":
             log.warning(
@@ -541,9 +532,7 @@ class RegistrationPipeline:
             if missing:
                 manifest.warn(f"target organs missing from the {side} image: {missing}")
             if cfg.save_masks:
-                save_image(
-                    seg.labelmap, out_dir / "masks" / f"{side}_labelmap.nii.gz", dtype=sitk.sitkUInt16
-                )
+                save_image(seg.labelmap, out_dir / "masks" / f"{side}_labelmap.nii.gz", dtype=sitk.sitkUInt16)
             results.append(seg)
         return results[0], results[1]
 
@@ -581,9 +570,10 @@ class RegistrationPipeline:
         setting = self.config.features.enabled
         if setting is False:
             return False
-        needs_features = any(
-            s.metric in (Metric.FEATURES_NCC, Metric.FEATURES_MSE) for s in self.config.stages
-        ) or self.config.deformable_engine is DeformableEngine.CONVEXADAM
+        needs_features = (
+            any(s.metric in (Metric.FEATURES_NCC, Metric.FEATURES_MSE) for s in self.config.stages)
+            or self.config.deformable_engine is DeformableEngine.CONVEXADAM
+        )
         if setting is True:
             return True
         # auto mode
@@ -690,9 +680,7 @@ class RegistrationPipeline:
         )
         f_feat = np.stack([sitk.GetArrayFromImage(c) for c in pair.fixed_channels], axis=0)
         m_feat = np.stack([sitk.GetArrayFromImage(c) for c in pair.moving_channels], axis=0)
-        mask_arr = (
-            sitk.GetArrayViewFromImage(mask_fixed).astype(np.uint8) if mask_fixed is not None else None
-        )
+        mask_arr = sitk.GetArrayViewFromImage(mask_fixed).astype(np.uint8) if mask_fixed is not None else None
         deformable = adam_instance_optimization(
             f_feat,
             m_feat,
@@ -734,7 +722,10 @@ class RegistrationPipeline:
 
         # -- initial state: the moving volume as stored, on the fixed grid ---- #
         moving_before = resample_like(
-            moving.image, fixed.image, transform=None, interpolator="linear",
+            moving.image,
+            fixed.image,
+            transform=None,
+            interpolator="linear",
             default_value=_background_of(moving.image),
         )
         metrics["similarity"] = similarity_report(fixed.image, moving_before, registered, qc_mask)
@@ -754,8 +745,7 @@ class RegistrationPipeline:
                 }
                 if not names:
                     manifest.warn(
-                        "different segmentation nomenclatures between fixed and moving: "
-                        "Dice not computed"
+                        "different segmentation nomenclatures between fixed and moving: Dice not computed"
                     )
                 organ_overlap = organ_overlap_report(
                     fixed_seg.labelmap,
@@ -765,7 +755,8 @@ class RegistrationPipeline:
                 )
                 if cfg.organs.save_masks and warped_labelmap is not None:
                     outputs["warped_labelmap"] = save_image(
-                        warped_labelmap, out_dir / "masks" / "moving_labelmap_registered.nii.gz",
+                        warped_labelmap,
+                        out_dir / "masks" / "moving_labelmap_registered.nii.gz",
                         dtype=sitk.sitkUInt16,
                     )
             except Exception as exc:
@@ -839,9 +830,7 @@ class RegistrationPipeline:
         gates = cfg.qc.gates
         if gates.min_ncc_gain is None and gates.min_nmi_gain is None:
             # Automatic choice: NMI for multimodal pairs, NCC otherwise.
-            gates = gates.model_copy(
-                update={"min_nmi_gain": 0.0} if multimodal else {"min_ncc_gain": 0.0}
-            )
+            gates = gates.model_copy(update={"min_nmi_gain": 0.0} if multimodal else {"min_ncc_gain": 0.0})
         qc = evaluate_gates(
             gates,
             similarity=metrics.get("similarity"),
@@ -855,8 +844,7 @@ class RegistrationPipeline:
 
         if qc["status"] == "FAIL" and cfg.runtime.fail_fast:
             raise RegistrationFailure(
-                "QC gates not met: "
-                + "; ".join(c["name"] for c in qc["checks"] if c["status"] == "FAIL")
+                "QC gates not met: " + "; ".join(c["name"] for c in qc["checks"] if c["status"] == "FAIL")
             )
 
         # -- figures ------------------------------------------------------------ #
@@ -975,9 +963,7 @@ class RegistrationPipeline:
                             f_series.files,
                             m_series.files,
                             transformation_type=(
-                                "RIGID"
-                                if abs(np.linalg.det(matrix[:3, :3]) - 1.0) < 1e-3
-                                else "AFFINE"
+                                "RIGID" if abs(np.linalg.det(matrix[:3, :3]) - 1.0) < 1e-3 else "AFFINE"
                             ),
                         )
                     except Exception as exc:
@@ -1005,9 +991,7 @@ class RegistrationPipeline:
         manifest: RunManifest,
     ) -> None:
         if not _is_dicom_dir(moving.source):
-            manifest.warn(
-                "DICOM export requested but the moving image is not a DICOM series: skipped"
-            )
+            manifest.warn("DICOM export requested but the moving image is not a DICOM series: skipped")
             return
         try:
             from regix.io.dicom import list_series

@@ -115,9 +115,7 @@ def overlay_figure(
     # to the centre, so they repeated the same image n_slices times while only the axial
     # row moved. Three identical panels look like three checks and are one.
     centre = _centre_index(fixed, mask)
-    per_axis = [
-        _slice_positions_around(centre[axis], f_arr.shape[axis], n_slices) for axis in range(3)
-    ]
+    per_axis = [_slice_positions_around(centre[axis], f_arr.shape[axis], n_slices) for axis in range(3)]
     positions = [(per_axis[0][k], per_axis[1][k], per_axis[2][k]) for k in range(n_slices)]
     aspects = _aspects(fixed.GetSpacing())
     columns = 2 if b_arr is not None else 1
@@ -217,8 +215,12 @@ def contour_figure(
     fig, axes = plt.subplots(1, 3, figsize=(12, 4.2), facecolor="white")
     for plane, (ax, name) in enumerate(zip(axes, ["axial", "coronal", "sagittal"], strict=False)):
         ax.imshow(
-            _extract_planes(base, index)[plane], cmap="gray", origin="lower",
-            aspect=aspects[plane], vmin=0, vmax=1,
+            _extract_planes(base, index)[plane],
+            cmap="gray",
+            origin="lower",
+            aspect=aspects[plane],
+            vmin=0,
+            vmax=1,
         )
         for arr, color in ((ref, "#2ecc71"), (war, "#ff2ec4")):
             plane_labels = _extract_planes(arr, index)[plane]
@@ -254,9 +256,7 @@ def jacobian_figure(
     but subtle 0.9-1.1 variation, which is exactly the range worth seeing.
     """
     try:
-        jac = sitk.DisplacementFieldJacobianDeterminant(
-            sitk.Cast(displacement_field, sitk.sitkVectorFloat64)
-        )
+        jac = sitk.DisplacementFieldJacobianDeterminant(sitk.Cast(displacement_field, sitk.sitkVectorFloat64))
     except Exception as exc:  # pragma: no cover
         log.debug("Jacobian map unavailable: %s", exc)
         return None
@@ -304,9 +304,7 @@ def jacobian_figure(
         fig.colorbar(image, ax=axes.ravel().tolist(), shrink=0.75, label="det(J)")
     folding = int((finite <= 0).sum())
     subtitle = f" — {folding} folded voxels" if folding else " — no folding"
-    fig.suptitle(
-        f"Jacobian determinant (1 = volume preserved, < 0 = folding){subtitle}", fontsize=11
-    )
+    fig.suptitle(f"Jacobian determinant (1 = volume preserved, < 0 = folding){subtitle}", fontsize=11)
     return _figure_to_base64(fig)
 
 
@@ -372,8 +370,7 @@ def build_html_report(path: str | Path, context: dict[str, Any]) -> Path:
     # -- verdict --------------------------------------------------------- #
     checks = context.get("qc", {}).get("checks", [])
     verdict_rows = [
-        [c["name"], c["status"], c.get("measured"), c.get("threshold"), c.get("message", "")]
-        for c in checks
+        [c["name"], c["status"], c.get("measured"), c.get("threshold"), c.get("message", "")] for c in checks
     ]
     sections.append(
         f"<h2>Verdict {_status_badge(status)}</h2>"
@@ -397,9 +394,7 @@ def build_html_report(path: str | Path, context: dict[str, Any]) -> Path:
     # -- metrics ----------------------------------------------------------- #
     similarity = context.get("similarity") or {}
     if similarity:
-        sections.append(
-            "<h2>Intensity similarity</h2>" + _table(_kv_rows(similarity), ["measure", "value"])
-        )
+        sections.append("<h2>Intensity similarity</h2>" + _table(_kv_rows(similarity), ["measure", "value"]))
 
     organs = context.get("organ_overlap") or {}
     if organs:
@@ -448,8 +443,14 @@ def build_html_report(path: str | Path, context: dict[str, Any]) -> Path:
             for s in stages
         ]
         headers = [
-            "stage", "transform", "metric", "channels", "resolutions", "masked",
-            "final metric", "seconds",
+            "stage",
+            "transform",
+            "metric",
+            "channels",
+            "resolutions",
+            "masked",
+            "final metric",
+            "seconds",
         ]
         sections.append("<h2>Registration stages</h2>" + _table(rows, headers))
 

@@ -30,9 +30,7 @@ log = get_logger("qc.metrics")
 # --------------------------------------------------------------------------- #
 # Intensities
 # --------------------------------------------------------------------------- #
-def _paired_arrays(
-    a: sitk.Image, b: sitk.Image, mask: sitk.Image | None
-) -> tuple[np.ndarray, np.ndarray]:
+def _paired_arrays(a: sitk.Image, b: sitk.Image, mask: sitk.Image | None) -> tuple[np.ndarray, np.ndarray]:
     if a.GetSize() != b.GetSize():
         raise ValueError(f"different grids: {a.GetSize()} vs {b.GetSize()}")
     # GetArrayFromImage (a copy), not GetArrayViewFromImage: a view onto a temporary
@@ -242,9 +240,7 @@ def target_registration_error(
 # --------------------------------------------------------------------------- #
 # Deformation-field plausibility
 # --------------------------------------------------------------------------- #
-def jacobian_statistics(
-    displacement_field: sitk.Image, mask: sitk.Image | None = None
-) -> dict[str, Any]:
+def jacobian_statistics(displacement_field: sitk.Image, mask: sitk.Image | None = None) -> dict[str, Any]:
     """Jacobian determinant of the displacement field.
 
     How to read it:
@@ -280,9 +276,7 @@ def jacobian_statistics(
     }
 
 
-def displacement_statistics(
-    displacement_field: sitk.Image, mask: sitk.Image | None = None
-) -> dict[str, Any]:
+def displacement_statistics(displacement_field: sitk.Image, mask: sitk.Image | None = None) -> dict[str, Any]:
     """Displacement magnitude (mm): compare against the expected physiological motion."""
     arr = sitk.GetArrayFromImage(displacement_field).astype(np.float64)
     magnitude = np.linalg.norm(arr, axis=-1)

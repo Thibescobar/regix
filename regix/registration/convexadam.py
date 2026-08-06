@@ -71,9 +71,7 @@ def adam_instance_optimization(
         ) from exc
 
     if fixed_features.shape != moving_features.shape:
-        raise ValueError(
-            f"features of different shapes: {fixed_features.shape} vs {moving_features.shape}"
-        )
+        raise ValueError(f"features of different shapes: {fixed_features.shape} vs {moving_features.shape}")
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cpu":
@@ -172,11 +170,11 @@ def _normalized_to_world_field(disp_norm: np.ndarray, reference: sitk.Image) -> 
     dy_vox = disp_norm[1] * (ny - 1) / 2.0
     dz_vox = disp_norm[2] * (nz - 1) / 2.0
 
-    spacing = np.asarray(reference.GetSpacing(), dtype=np.float64)          # (x, y, z)
+    spacing = np.asarray(reference.GetSpacing(), dtype=np.float64)  # (x, y, z)
     direction = np.asarray(reference.GetDirection(), dtype=np.float64).reshape(3, 3)
-    vox = np.stack([dx_vox, dy_vox, dz_vox], axis=-1)                       # (Z, Y, X, 3) in voxels
+    vox = np.stack([dx_vox, dy_vox, dz_vox], axis=-1)  # (Z, Y, X, 3) in voxels
     physical = vox * spacing[None, None, None, :]
-    world = physical @ direction.T                                         # columns = image axes
+    world = physical @ direction.T  # columns = image axes
 
     field = sitk.GetImageFromArray(np.ascontiguousarray(world, dtype=np.float64), isVector=True)
     field.SetSpacing(reference.GetSpacing())

@@ -77,7 +77,7 @@ def joint_pca_reduce(
 
     def _project(features: np.ndarray) -> np.ndarray:
         flat = features.reshape(features.shape[0], -1).T  # (V, C)
-        proj = (flat - mean) @ basis.T                     # (V, k)
+        proj = (flat - mean) @ basis.T  # (V, k)
         return proj.T.reshape((n_components,) + features.shape[1:]).astype(np.float32)
 
     info = {

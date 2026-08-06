@@ -99,14 +99,23 @@ def evaluate_gates(
         name = f"{key}_gain"
         if gain is None or not np.isfinite(gain):
             result.add(
-                Check(name, WARN, gain, threshold,
-                      f"{key.upper()} gain not computable (no comparable initial state)")
+                Check(
+                    name,
+                    WARN,
+                    gain,
+                    threshold,
+                    f"{key.upper()} gain not computable (no comparable initial state)",
+                )
             )
         elif gain < threshold:
             result.add(
-                Check(name, FAIL, gain, threshold,
-                      "registration did not improve similarity: initialization or metric "
-                      "is inadequate")
+                Check(
+                    name,
+                    FAIL,
+                    gain,
+                    threshold,
+                    "registration did not improve similarity: initialization or metric is inadequate",
+                )
             )
         elif gain == 0.0 and threshold == 0.0:
             # `gain < threshold` cannot separate "did nothing" from "improved a little"
@@ -114,9 +123,14 @@ def evaluate_gates(
             # changed nothing measurable -- either the pair was already aligned, or the
             # stage never moved. Not a failure on its own; worth saying out loud.
             result.add(
-                Check(name, WARN, gain, threshold,
-                      f"{key.upper()} did not change: either the pair was already aligned, "
-                      "or the stage optimised nothing (check the stage criterion)")
+                Check(
+                    name,
+                    WARN,
+                    gain,
+                    threshold,
+                    f"{key.upper()} did not change: either the pair was already aligned, "
+                    "or the stage optimised nothing (check the stage criterion)",
+                )
             )
         else:
             result.add(Check(name, PASS, gain, threshold))
@@ -131,14 +145,21 @@ def evaluate_gates(
             name = f"final_metric[{label}]"
             if metric is None or not np.isfinite(metric):
                 result.add(
-                    Check(name, WARN, metric, gates.min_abs_final_metric,
-                          "stage criterion unavailable: could not be read back from the "
-                          "elastix log")
+                    Check(
+                        name,
+                        WARN,
+                        metric,
+                        gates.min_abs_final_metric,
+                        "stage criterion unavailable: could not be read back from the elastix log",
+                    )
                 )
             elif abs(float(metric)) < gates.min_abs_final_metric:
                 result.add(
                     Check(
-                        name, FAIL, metric, gates.min_abs_final_metric,
+                        name,
+                        FAIL,
+                        metric,
+                        gates.min_abs_final_metric,
                         "degenerate criterion: elastix reported success but optimised "
                         "nothing. The images and the stage parameters disagree -- check "
                         "for an internal pixel type or an intensity rescaling that "
@@ -156,15 +177,25 @@ def evaluate_gates(
         entry = (organ_overlap or {}).get(organ)
         if entry is None or entry.get("dice") is None or not np.isfinite(entry.get("dice", np.nan)):
             result.add(
-                Check(f"dice[{organ}]", WARN, None, threshold,
-                      f"Dice for {organ} unavailable (organ missing from one of the volumes)")
+                Check(
+                    f"dice[{organ}]",
+                    WARN,
+                    None,
+                    threshold,
+                    f"Dice for {organ} unavailable (organ missing from one of the volumes)",
+                )
             )
             continue
         value = float(entry["dice"])
         status = PASS if value >= threshold else FAIL
         result.add(
-            Check(f"dice[{organ}]", status, round(value, 4), threshold,
-                  "" if status == PASS else "insufficient overlap after registration")
+            Check(
+                f"dice[{organ}]",
+                status,
+                round(value, 4),
+                threshold,
+                "" if status == PASS else "insufficient overlap after registration",
+            )
         )
 
     # --- 3. field folding ------------------------------------------------- #
@@ -197,8 +228,13 @@ def evaluate_gates(
             )
     elif deformable:
         result.add(
-            Check("folding_fraction", WARN, None, gates.max_folding_fraction,
-                  "Jacobian not computed although the transform is deformable")
+            Check(
+                "folding_fraction",
+                WARN,
+                None,
+                gates.max_folding_fraction,
+                "Jacobian not computed although the transform is deformable",
+            )
         )
 
     # --- 4. plausibility of the linear part ------------------------------ #
@@ -207,22 +243,38 @@ def evaluate_gates(
             value = float(linear_analysis.get("translation_norm_mm", 0.0))
             status = PASS if value <= gates.max_translation_mm else FAIL
             result.add(
-                Check("translation_mm", status, value, gates.max_translation_mm,
-                      "" if status == PASS else "implausible translation: likely divergence")
+                Check(
+                    "translation_mm",
+                    status,
+                    value,
+                    gates.max_translation_mm,
+                    "" if status == PASS else "implausible translation: likely divergence",
+                )
             )
         if gates.max_scale_deviation is not None:
             value = float(linear_analysis.get("max_scale_deviation", 0.0))
             status = PASS if value <= gates.max_scale_deviation else FAIL
             result.add(
-                Check("scale_deviation", status, value, gates.max_scale_deviation,
-                      "" if status == PASS else "abnormal scale change for an intra-patient "
-                      "registration: check the DICOM spacings")
+                Check(
+                    "scale_deviation",
+                    status,
+                    value,
+                    gates.max_scale_deviation,
+                    ""
+                    if status == PASS
+                    else "abnormal scale change for an intra-patient registration: check the DICOM spacings",
+                )
             )
         determinant = linear_analysis.get("determinant")
         if determinant is not None and determinant <= 0:
             result.add(
-                Check("determinant", FAIL, determinant, "> 0",
-                      "negative determinant: the transform includes a mirror flip")
+                Check(
+                    "determinant",
+                    FAIL,
+                    determinant,
+                    "> 0",
+                    "negative determinant: the transform includes a mirror flip",
+                )
             )
 
     # --- 5. TRE ----------------------------------------------------------- #
@@ -236,8 +288,13 @@ def evaluate_gates(
             else:
                 status = PASS if value <= gates.max_tre_mm else FAIL
                 result.add(
-                    Check("tre_mm", status, value, gates.max_tre_mm,
-                          "" if status == PASS else "landmark error above the clinical threshold")
+                    Check(
+                        "tre_mm",
+                        status,
+                        value,
+                        gates.max_tre_mm,
+                        "" if status == PASS else "landmark error above the clinical threshold",
+                    )
                 )
 
     if not result.checks:
@@ -247,7 +304,10 @@ def evaluate_gates(
     for check in result.failures:
         log.error(
             "QC FAIL %s: measured=%s threshold=%s | %s",
-            check.name, check.measured, check.threshold, check.message,
+            check.name,
+            check.measured,
+            check.threshold,
+            check.message,
         )
     for check in result.warnings:
         log.warning("QC WARN %s: %s", check.name, check.message)

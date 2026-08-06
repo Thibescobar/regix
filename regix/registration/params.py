@@ -324,7 +324,7 @@ def _from_parameter_file(stage: StageConfig, ctx: ParamContext) -> ParameterMap:
             name for name, elastix_name in _TRANSFORM_NAMES.items() if elastix_name == pmap["Transform"][0]
         ]
         raise ValueError(
-            f"{path.name} declares (Transform \"{pmap['Transform'][0]}\") but the stage says "
+            f'{path.name} declares (Transform "{pmap["Transform"][0]}") but the stage says '
             f"type: {stage.type.value} (= {expected_transform}). Declare "
             + (f"type: {matching[0].value}" if matching else "a matching stage type")
             + " so that Regix interprets the stage result correctly."
@@ -334,8 +334,7 @@ def _from_parameter_file(stage: StageConfig, ctx: ParamContext) -> ParameterMap:
         current = tuple(pmap.get(key, ()))
         if current and current != value:
             log.warning(
-                "%s: (%s %s) overridden to %s -- Regix requires it, see "
-                "ENFORCED_WITH_PARAMETER_FILE",
+                "%s: (%s %s) overridden to %s -- Regix requires it, see ENFORCED_WITH_PARAMETER_FILE",
                 path.name,
                 key,
                 " ".join(current),
@@ -362,9 +361,7 @@ def _from_parameter_file(stage: StageConfig, ctx: ParamContext) -> ParameterMap:
 
     _validate(pmap, dimension=ctx.dimension)
     _warn_on_quantisation(pmap, ctx, path.name)
-    log.info(
-        "stage %s: parameters read from %s (%d keys)", stage.display_name, path.name, len(pmap)
-    )
+    log.info("stage %s: parameters read from %s (%d keys)", stage.display_name, path.name, len(pmap))
     return pmap
 
 
@@ -447,8 +444,7 @@ def _validate(pmap: ParameterMap, dimension: int | None = None) -> None:
     registration = pmap.get("Registration", ("MultiResolutionRegistration",))[0]
     if n_metrics > 1 and registration != "MultiMetricMultiResolutionRegistration":
         raise ValueError(
-            f"{n_metrics} metrics require MultiMetricMultiResolutionRegistration, "
-            f"not {registration}"
+            f"{n_metrics} metrics require MultiMetricMultiResolutionRegistration, not {registration}"
         )
     n_res = int(pmap["NumberOfResolutions"][0])
     if "GridSpacingSchedule" in pmap and len(pmap["GridSpacingSchedule"]) not in (n_res, n_res * 3):
@@ -473,9 +469,7 @@ def _validate(pmap: ParameterMap, dimension: int | None = None) -> None:
         for key in ("FixedImageDimension", "MovingImageDimension"):
             declared = pmap.get(key)
             if declared and int(declared[0]) != dimension:
-                raise ValueError(
-                    f"{key} is {declared[0]} but the volumes are {dimension}D"
-                )
+                raise ValueError(f"{key} is {declared[0]} but the volumes are {dimension}D")
 
 
 # --------------------------------------------------------------------------- #
@@ -556,9 +550,7 @@ def _split_values(body: str) -> list[str]:
     return out
 
 
-def describe_stage(
-    stage: StageConfig, ctx: ParamContext, pmap: ParameterMap | None = None
-) -> dict[str, Any]:
+def describe_stage(stage: StageConfig, ctx: ParamContext, pmap: ParameterMap | None = None) -> dict[str, Any]:
     """Readable summary of a stage, for the logs and the QC report.
 
     Pass the built ``pmap`` whenever it is available: the summary then reports what

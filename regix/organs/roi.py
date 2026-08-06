@@ -130,9 +130,7 @@ def plan_roi(
         return OrganROI(fixed=fixed, moving=moving, info={"applied": False, "reason": "no target"})
     if fixed_segmentation is None or moving_segmentation is None:
         log.warning("ROI cropping requested but a segmentation is missing: skipped")
-        return OrganROI(
-            fixed=fixed, moving=moving, info={"applied": False, "reason": "missing segmentation"}
-        )
+        return OrganROI(fixed=fixed, moving=moving, info={"applied": False, "reason": "missing segmentation"})
 
     margin = margin_mm if margin_mm is not None else merged_profile(resolved).roi_margin_mm
     out: dict[str, Any] = {"applied": True, "targets": resolved, "margin_mm": margin}

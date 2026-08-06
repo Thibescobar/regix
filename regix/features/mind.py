@@ -24,14 +24,21 @@ from regix.logging_utils import get_logger
 log = get_logger("features.mind")
 
 # 6-neighbourhood (in voxels, before dilation).
-_NEIGHBOURS = np.array(
-    [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], dtype=int
-)
+_NEIGHBOURS = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], dtype=int)
 # 12 pairs of non-collinear neighbours: the 12 channels of the SSC descriptor.
 _PAIRS = [
-    (0, 2), (0, 3), (0, 4), (0, 5),
-    (1, 2), (1, 3), (1, 4), (1, 5),
-    (2, 4), (2, 5), (3, 4), (3, 5),
+    (0, 2),
+    (0, 3),
+    (0, 4),
+    (0, 5),
+    (1, 2),
+    (1, 3),
+    (1, 4),
+    (1, 5),
+    (2, 4),
+    (2, 5),
+    (3, 4),
+    (3, 5),
 ]
 
 

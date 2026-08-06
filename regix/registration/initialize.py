@@ -118,8 +118,7 @@ def organ_centroid_init(
     common = [o for o in f_cent if o in m_cent]
     if not common:
         raise ValueError(
-            f"no organ in common among {list(targets)} "
-            f"(fixed: {sorted(f_cent)}, moving: {sorted(m_cent)})"
+            f"no organ in common among {list(targets)} (fixed: {sorted(f_cent)}, moving: {sorted(m_cent)})"
         )
     c_f = np.mean([f_cent[o] for o in common], axis=0)
     c_m = np.mean([m_cent[o] for o in common], axis=0)
@@ -209,7 +208,7 @@ def with_extra_rotation(
     rot = _euler(center, np.zeros(3), [np.radians(a) for a in rotation_deg])
     composite = sitk.CompositeTransform(3)
     composite.AddTransform(base)  # applied second (CompositeTransform convention)
-    composite.AddTransform(rot)   # applied first, in the fixed frame
+    composite.AddTransform(rot)  # applied first, in the fixed frame
     return composite
 
 
@@ -356,9 +355,7 @@ def choose_initialization(
 
     coarse_fixed = _coarse(fixed.image, scoring_spacing_mm)
     coarse_moving = _coarse(moving.image, scoring_spacing_mm)
-    coarse_mask = (
-        resample_like(fixed_mask, coarse_fixed, is_mask=True) if fixed_mask is not None else None
-    )
+    coarse_mask = resample_like(fixed_mask, coarse_fixed, is_mask=True) if fixed_mask is not None else None
 
     for cand in candidates:
         try:

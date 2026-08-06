@@ -23,12 +23,12 @@ PRESET_DIR = Path(__file__).parent / "presets"
 # Enums
 # --------------------------------------------------------------------------- #
 class Metric(str, Enum):
-    AUTO = "auto"                 # chosen from the modalities and feature availability
-    MI = "mi"                     # AdvancedMattesMutualInformation (classic multimodal)
-    NCC = "ncc"                   # AdvancedNormalizedCorrelation (monomodal)
-    MSE = "mse"                   # AdvancedMeanSquares
-    FEATURES_NCC = "features_ncc" # multi-channel NCC on anatomix features
-    FEATURES_MSE = "features_mse" # multi-channel SSD on anatomix features
+    AUTO = "auto"  # chosen from the modalities and feature availability
+    MI = "mi"  # AdvancedMattesMutualInformation (classic multimodal)
+    NCC = "ncc"  # AdvancedNormalizedCorrelation (monomodal)
+    MSE = "mse"  # AdvancedMeanSquares
+    FEATURES_NCC = "features_ncc"  # multi-channel NCC on anatomix features
+    FEATURES_MSE = "features_mse"  # multi-channel SSD on anatomix features
 
 
 class TransformType(str, Enum):
@@ -41,24 +41,24 @@ class TransformType(str, Enum):
 
 class InitMode(str, Enum):
     IDENTITY = "identity"
-    GEOMETRY = "geometry"                # geometric centres of the grids
-    MOMENTS = "moments"                  # intensity centres of mass
-    ORGAN_CENTROID = "organ_centroid"    # centres of mass of organ masks
-    ORGAN_MOMENTS = "organ_moments"      # plus scale/inertia alignment of the organ
-    MULTISTART = "multistart"            # try several candidates, keep the best
-    FILE = "file"                        # initial transform supplied
+    GEOMETRY = "geometry"  # geometric centres of the grids
+    MOMENTS = "moments"  # intensity centres of mass
+    ORGAN_CENTROID = "organ_centroid"  # centres of mass of organ masks
+    ORGAN_MOMENTS = "organ_moments"  # plus scale/inertia alignment of the organ
+    MULTISTART = "multistart"  # try several candidates, keep the best
+    FILE = "file"  # initial transform supplied
 
 
 class OrganBackend(str, Enum):
     NONE = "none"
-    EXTERNAL = "external"        # pre-computed NIfTI masks (the most common clinical case)
+    EXTERNAL = "external"  # pre-computed NIfTI masks (the most common clinical case)
     TOTALSEGMENTATOR = "totalsegmentator"
 
 
 class DeformableEngine(str, Enum):
     NONE = "none"
-    ELASTIX = "elastix"          # B-spline, CPU, deterministic, readable parameters
-    CONVEXADAM = "convexadam"    # anatomix + instance optimisation, GPU, fast, strong multimodal
+    ELASTIX = "elastix"  # B-spline, CPU, deterministic, readable parameters
+    CONVEXADAM = "convexadam"  # anatomix + instance optimisation, GPU, fast, strong multimodal
 
 
 # --------------------------------------------------------------------------- #
@@ -443,9 +443,7 @@ class RegistrationConfig(BaseModel):
             raise ValueError("at least one registration stage is required")
         has_bspline = any(s.type is TransformType.BSPLINE for s in self.stages)
         if has_bspline and self.deformable_engine is DeformableEngine.CONVEXADAM:
-            raise ValueError(
-                "a B-spline stage and deformable_engine=convexadam are redundant: choose one"
-            )
+            raise ValueError("a B-spline stage and deformable_engine=convexadam are redundant: choose one")
         if has_bspline and self.deformable_engine is DeformableEngine.NONE:
             raise ValueError("a bspline stage is defined but deformable_engine=none")
         for s in self.stages:
@@ -534,9 +532,7 @@ def _build_from_raw(raw: dict, origin: Path, _seen: Sequence[str] = ()) -> Regis
     if not parent_path.exists():
         raise FileNotFoundError(f"parent preset '{parent_name}' not found")
     parent_raw = yaml.safe_load(parent_path.read_text(encoding="utf-8")) or {}
-    merged = _build_from_raw(parent_raw, parent_path, tuple(_seen) + (parent_name,)).model_dump(
-        mode="python"
-    )
+    merged = _build_from_raw(parent_raw, parent_path, tuple(_seen) + (parent_name,)).model_dump(mode="python")
     _deep_update(merged, raw)
     # a stage list provided by the child replaces the parent's
     if "stages" in raw:

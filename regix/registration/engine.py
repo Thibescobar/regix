@@ -327,9 +327,7 @@ class ElastixEngine:
 
         result = stage_dir / "TransformParameters.0.txt"
         if not result.exists():
-            raise RegistrationFailure(
-                f"elastix did not produce {result}. Log: {stage_dir / 'elastix.log'}"
-            )
+            raise RegistrationFailure(f"elastix did not produce {result}. Log: {stage_dir / 'elastix.log'}")
         return registration, result
 
 
@@ -387,8 +385,7 @@ def _check_mask(mask: sitk.Image, side: str, min_voxels: int = 512) -> None:
         raise RegistrationFailure(f"the {side} mask is empty")
     if count < min_voxels:
         log.warning(
-            "%s mask is very small (%d voxels): increase organs.mask_dilate_mm or "
-            "reduce n_spatial_samples",
+            "%s mask is very small (%d voxels): increase organs.mask_dilate_mm or reduce n_spatial_samples",
             side,
             count,
         )

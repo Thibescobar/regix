@@ -71,13 +71,13 @@ class OrganProfile:
     """Recommended settings for registering a given organ."""
 
     name: str
-    region: str                                  # abdomen | thorax | pelvis | head | musculoskeletal
-    deformable: bool                             # is a non-rigid stage relevant?
-    bspline_grid_mm: float = 20.0                # recommended B-spline grid spacing
-    hu_window: str | None = None                 # suitable CT window
-    mask_dilate_mm: float = 8.0                  # criterion mask margin
+    region: str  # abdomen | thorax | pelvis | head | musculoskeletal
+    deformable: bool  # is a non-rigid stage relevant?
+    bspline_grid_mm: float = 20.0  # recommended B-spline grid spacing
+    hu_window: str | None = None  # suitable CT window
+    mask_dilate_mm: float = 8.0  # criterion mask margin
     roi_margin_mm: float = 25.0
-    typical_motion_mm: float = 10.0              # expected physiological amplitude
+    typical_motion_mm: float = 10.0  # expected physiological amplitude
     notes: str = ""
 
     def recommended_stage_types(self) -> list[str]:
@@ -90,75 +90,146 @@ def _p(name, region, deformable, **kw) -> OrganProfile:
 
 ORGAN_PROFILES: dict[str, OrganProfile] = {
     # --- abdomen: substantial respiratory motion --------------------------- #
-    "liver": _p("liver", "abdomen", True, bspline_grid_mm=20.0, hu_window="ct_liver",
-                typical_motion_mm=20.0,
-                notes="Cranio-caudal respiratory displacement of 10-25 mm; a deformable "
-                      "stage is indispensable."),
-    "spleen": _p("spleen", "abdomen", True, bspline_grid_mm=20.0, hu_window="ct_abdomen",
-                 typical_motion_mm=15.0),
-    "pancreas": _p("pancreas", "abdomen", True, bspline_grid_mm=15.0, hu_window="ct_abdomen",
-                   mask_dilate_mm=10.0, typical_motion_mm=15.0,
-                   notes="Low contrast and a mobile duodenal neighbourhood: mask strictly, "
-                         "use a fine grid."),
-    "kidney_left": _p("kidney_left", "abdomen", True, bspline_grid_mm=20.0, hu_window="ct_abdomen",
-                      typical_motion_mm=10.0),
-    "kidney_right": _p("kidney_right", "abdomen", True, bspline_grid_mm=20.0, hu_window="ct_abdomen",
-                       typical_motion_mm=10.0),
-    "stomach": _p("stomach", "abdomen", True, bspline_grid_mm=15.0, hu_window="ct_abdomen",
-                  typical_motion_mm=25.0,
-                  notes="Highly variable filling: registration will not compensate a change "
-                        "in gastric volume."),
-    "duodenum": _p("duodenum", "abdomen", True, bspline_grid_mm=12.0, hu_window="ct_abdomen",
-                   typical_motion_mm=20.0),
+    "liver": _p(
+        "liver",
+        "abdomen",
+        True,
+        bspline_grid_mm=20.0,
+        hu_window="ct_liver",
+        typical_motion_mm=20.0,
+        notes="Cranio-caudal respiratory displacement of 10-25 mm; a deformable stage is indispensable.",
+    ),
+    "spleen": _p(
+        "spleen", "abdomen", True, bspline_grid_mm=20.0, hu_window="ct_abdomen", typical_motion_mm=15.0
+    ),
+    "pancreas": _p(
+        "pancreas",
+        "abdomen",
+        True,
+        bspline_grid_mm=15.0,
+        hu_window="ct_abdomen",
+        mask_dilate_mm=10.0,
+        typical_motion_mm=15.0,
+        notes="Low contrast and a mobile duodenal neighbourhood: mask strictly, use a fine grid.",
+    ),
+    "kidney_left": _p(
+        "kidney_left", "abdomen", True, bspline_grid_mm=20.0, hu_window="ct_abdomen", typical_motion_mm=10.0
+    ),
+    "kidney_right": _p(
+        "kidney_right", "abdomen", True, bspline_grid_mm=20.0, hu_window="ct_abdomen", typical_motion_mm=10.0
+    ),
+    "stomach": _p(
+        "stomach",
+        "abdomen",
+        True,
+        bspline_grid_mm=15.0,
+        hu_window="ct_abdomen",
+        typical_motion_mm=25.0,
+        notes="Highly variable filling: registration will not compensate a change in gastric volume.",
+    ),
+    "duodenum": _p(
+        "duodenum", "abdomen", True, bspline_grid_mm=12.0, hu_window="ct_abdomen", typical_motion_mm=20.0
+    ),
     "gallbladder": _p("gallbladder", "abdomen", True, bspline_grid_mm=15.0, hu_window="ct_abdomen"),
     "esophagus": _p("esophagus", "thorax", True, bspline_grid_mm=12.0, hu_window="ct_mediastinum"),
-    "colon": _p("colon", "abdomen", True, bspline_grid_mm=15.0, hu_window="ct_abdomen",
-                typical_motion_mm=25.0, notes="Peristalsis and gas: Dice-based QC is unreliable."),
-    "small_bowel": _p("small_bowel", "abdomen", True, bspline_grid_mm=12.0, hu_window="ct_abdomen",
-                      typical_motion_mm=30.0),
-    "adrenal_gland_left": _p("adrenal_gland_left", "abdomen", True, bspline_grid_mm=12.0,
-                             mask_dilate_mm=12.0, roi_margin_mm=30.0,
-                             notes="Sub-centimetre structure: register globally first, then "
-                                   "refine on a local ROI."),
-    "adrenal_gland_right": _p("adrenal_gland_right", "abdomen", True, bspline_grid_mm=12.0,
-                              mask_dilate_mm=12.0, roi_margin_mm=30.0),
+    "colon": _p(
+        "colon",
+        "abdomen",
+        True,
+        bspline_grid_mm=15.0,
+        hu_window="ct_abdomen",
+        typical_motion_mm=25.0,
+        notes="Peristalsis and gas: Dice-based QC is unreliable.",
+    ),
+    "small_bowel": _p(
+        "small_bowel", "abdomen", True, bspline_grid_mm=12.0, hu_window="ct_abdomen", typical_motion_mm=30.0
+    ),
+    "adrenal_gland_left": _p(
+        "adrenal_gland_left",
+        "abdomen",
+        True,
+        bspline_grid_mm=12.0,
+        mask_dilate_mm=12.0,
+        roi_margin_mm=30.0,
+        notes="Sub-centimetre structure: register globally first, then refine on a local ROI.",
+    ),
+    "adrenal_gland_right": _p(
+        "adrenal_gland_right", "abdomen", True, bspline_grid_mm=12.0, mask_dilate_mm=12.0, roi_margin_mm=30.0
+    ),
     # --- vessels: useful rigid landmarks ---------------------------------- #
-    "aorta": _p("aorta", "abdomen", False, hu_window="ct_soft", typical_motion_mm=5.0,
-                notes="Excellent initialization landmark: long, well contrasted, barely "
-                      "deformable."),
+    "aorta": _p(
+        "aorta",
+        "abdomen",
+        False,
+        hu_window="ct_soft",
+        typical_motion_mm=5.0,
+        notes="Excellent initialization landmark: long, well contrasted, barely deformable.",
+    ),
     "inferior_vena_cava": _p("inferior_vena_cava", "abdomen", False, hu_window="ct_soft"),
-    "portal_vein_and_splenic_vein": _p("portal_vein_and_splenic_vein", "abdomen", True,
-                                       bspline_grid_mm=12.0, hu_window="ct_liver"),
+    "portal_vein_and_splenic_vein": _p(
+        "portal_vein_and_splenic_vein", "abdomen", True, bspline_grid_mm=12.0, hu_window="ct_liver"
+    ),
     "hepatic_vessel": _p("hepatic_vessel", "abdomen", True, bspline_grid_mm=10.0, hu_window="ct_liver"),
     "celiac_trunk": _p("celiac_trunk", "abdomen", False, hu_window="ct_soft"),
     # --- thorax ------------------------------------------------------------ #
-    "lung_left": _p("lung_left", "thorax", True, bspline_grid_mm=15.0, hu_window="ct_lung",
-                    typical_motion_mm=25.0,
-                    notes="Large respiratory deformation: plan for 4 resolutions and a low "
-                          "bending-energy weight."),
-    "lung_right": _p("lung_right", "thorax", True, bspline_grid_mm=15.0, hu_window="ct_lung",
-                     typical_motion_mm=25.0),
-    "heart": _p("heart", "thorax", True, bspline_grid_mm=15.0, hu_window="ct_mediastinum",
-                typical_motion_mm=15.0,
-                notes="Cardiac motion is not compensated: register equivalent phases."),
+    "lung_left": _p(
+        "lung_left",
+        "thorax",
+        True,
+        bspline_grid_mm=15.0,
+        hu_window="ct_lung",
+        typical_motion_mm=25.0,
+        notes="Large respiratory deformation: plan for 4 resolutions and a low bending-energy weight.",
+    ),
+    "lung_right": _p(
+        "lung_right", "thorax", True, bspline_grid_mm=15.0, hu_window="ct_lung", typical_motion_mm=25.0
+    ),
+    "heart": _p(
+        "heart",
+        "thorax",
+        True,
+        bspline_grid_mm=15.0,
+        hu_window="ct_mediastinum",
+        typical_motion_mm=15.0,
+        notes="Cardiac motion is not compensated: register equivalent phases.",
+    ),
     # --- pelvis ------------------------------------------------------------ #
-    "prostate": _p("prostate", "pelvis", True, bspline_grid_mm=12.0, hu_window="ct_soft",
-                   mask_dilate_mm=10.0, roi_margin_mm=30.0, typical_motion_mm=8.0,
-                   notes="Typical T2 MR -> planning CT case; bladder and rectal filling "
-                         "dominate."),
-    "urinary_bladder": _p("urinary_bladder", "pelvis", True, bspline_grid_mm=15.0, hu_window="ct_soft",
-                          typical_motion_mm=15.0),
-    "rectum": _p("rectum", "pelvis", True, bspline_grid_mm=12.0, hu_window="ct_soft",
-                 typical_motion_mm=15.0),
+    "prostate": _p(
+        "prostate",
+        "pelvis",
+        True,
+        bspline_grid_mm=12.0,
+        hu_window="ct_soft",
+        mask_dilate_mm=10.0,
+        roi_margin_mm=30.0,
+        typical_motion_mm=8.0,
+        notes="Typical T2 MR -> planning CT case; bladder and rectal filling dominate.",
+    ),
+    "urinary_bladder": _p(
+        "urinary_bladder", "pelvis", True, bspline_grid_mm=15.0, hu_window="ct_soft", typical_motion_mm=15.0
+    ),
+    "rectum": _p("rectum", "pelvis", True, bspline_grid_mm=12.0, hu_window="ct_soft", typical_motion_mm=15.0),
     # --- bone / head: rigid ------------------------------------------------ #
-    "femur_left": _p("femur_left", "musculoskeletal", False, hu_window="ct_bone",
-                     typical_motion_mm=0.0, notes="Rigid by construction: do not allow a B-spline."),
+    "femur_left": _p(
+        "femur_left",
+        "musculoskeletal",
+        False,
+        hu_window="ct_bone",
+        typical_motion_mm=0.0,
+        notes="Rigid by construction: do not allow a B-spline.",
+    ),
     "femur_right": _p("femur_right", "musculoskeletal", False, hu_window="ct_bone"),
     "hip_left": _p("hip_left", "musculoskeletal", False, hu_window="ct_bone"),
     "hip_right": _p("hip_right", "musculoskeletal", False, hu_window="ct_bone"),
     "sacrum": _p("sacrum", "pelvis", False, hu_window="ct_bone"),
-    "brain": _p("brain", "head", False, hu_window="ct_brain", typical_motion_mm=0.0,
-                notes="Rigid intra-patient; affine only if a scale change is expected."),
+    "brain": _p(
+        "brain",
+        "head",
+        False,
+        hu_window="ct_brain",
+        typical_motion_mm=0.0,
+        notes="Rigid intra-patient; affine only if a scale change is expected.",
+    ),
 }
 
 #: Groupings usable directly as targets.

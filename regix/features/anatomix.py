@@ -252,7 +252,7 @@ def extract_feature_pair(
     elif chosen == "mind":
         f_arr = normalize_for_features(fixed.image, clip_for_modality(fixed.modality))
         m_arr = normalize_for_features(moving.image, clip_for_modality(moving.modality))
-        f_spacing = tuple(float(s) for s in reversed(fixed.spacing))    # ITK (x,y,z) -> numpy (z,y,x)
+        f_spacing = tuple(float(s) for s in reversed(fixed.spacing))  # ITK (x,y,z) -> numpy (z,y,x)
         m_spacing = tuple(float(s) for s in reversed(moving.spacing))
         f_feat = mind_ssc_features(f_arr, spacing=f_spacing)
         m_feat = mind_ssc_features(m_arr, spacing=m_spacing)

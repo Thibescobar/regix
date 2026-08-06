@@ -76,15 +76,14 @@ def test_organ_centroid_initialization_recovers_a_translation():
     truth = known_rigid(fixed_img, (0.0, 0.0, 0.0), (9.0, -7.0, 5.0))
     moving_labels = warp(fixed_labels, truth, is_label=True)
 
-    t, info = organ_centroid_init(
-        _segmentation(fixed_labels), _segmentation(moving_labels), ["liver"]
-    )
+    t, info = organ_centroid_init(_segmentation(fixed_labels), _segmentation(moving_labels), ["liver"])
     assert info["organs_used"] == ["liver"]
     assert info["offset_mm"] > 5.0
     probe = (0.0, 0.0, 60.0)
-    assert np.linalg.norm(
-        np.asarray(t.TransformPoint(probe)) - np.asarray(truth.TransformPoint(list(probe)))
-    ) < 2.5
+    assert (
+        np.linalg.norm(np.asarray(t.TransformPoint(probe)) - np.asarray(truth.TransformPoint(list(probe))))
+        < 2.5
+    )
 
 
 def test_organ_centroid_initialization_needs_a_common_organ():
@@ -107,9 +106,7 @@ def test_organ_moments_initialization_never_mirrors():
     truth = known_rigid(fixed_img, (5.0, -4.0, 8.0), (6.0, -3.0, 4.0))
     moving_labels = warp(fixed_labels, truth, is_label=True)
 
-    t, info = organ_moments_init(
-        _segmentation(fixed_labels), _segmentation(moving_labels), ["liver"]
-    )
+    t, info = organ_moments_init(_segmentation(fixed_labels), _segmentation(moving_labels), ["liver"])
     assert info["organ_used"] == "liver"
     assert 0.7 <= info["scale"] <= 1.4, "the scale guard rail must hold"
 
@@ -223,9 +220,7 @@ def test_initialization_from_a_file(tmp_path):
     candidates = build_candidates(_volume(fixed_img), _volume(fixed_img), config)
     assert len(candidates) == 1 and candidates[0].name == "file"
     probe = [11.0, -22.0, 33.0]
-    assert np.allclose(
-        candidates[0].transform.TransformPoint(probe), truth.TransformPoint(probe), atol=1e-6
-    )
+    assert np.allclose(candidates[0].transform.TransformPoint(probe), truth.TransformPoint(probe), atol=1e-6)
 
 
 @pytest.mark.parametrize("metric", ["ncc", "nmi", "auto"])
