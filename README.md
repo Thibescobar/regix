@@ -5,7 +5,7 @@
 ![CI](https://github.com/Thibescobar/regix/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
-![Tests](https://img.shields.io/badge/tests-90%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-122%20passed-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-78%25-yellowgreen)
 ![Linting](https://img.shields.io/badge/linting-ruff-purple)
 

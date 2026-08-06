@@ -294,6 +294,24 @@ def test_a_zoo_file_cannot_break_the_geometry_or_the_transform_chain(tmp_path):
 _REAL_ZOO_FILE = pathlib.Path(__file__).parent / "data" / "Parameters.Par0008.affine.txt"
 
 
+def test_the_real_zoo_fixture_reached_the_repository():
+    """Guard on a trap that already cost a red CI, with a message naming the cause.
+
+    ``.gitignore`` excludes ``data/`` at any depth -- deliberately broad, so that no
+    patient image can ever be committed. That rule also matches ``tests/data/``, so this
+    fixture was invisible to git while sitting happily in the working tree: the suite
+    passed locally and CI failed on three bare FileNotFoundErrors that said nothing
+    about why. The ``!tests/data/`` exception fixes it; this test makes the next
+    occurrence self-explaining instead of cryptic.
+    """
+    assert _REAL_ZOO_FILE.is_file(), (
+        f"{_REAL_ZOO_FILE.name} is missing from {_REAL_ZOO_FILE.parent}. It is a "
+        "committed fixture: check that .gitignore still carries the '!tests/data/' "
+        "exception *after* the broad 'data/' rule, and that git actually tracks the file "
+        "(git ls-files tests/data/)."
+    )
+
+
 def test_a_real_zoo_file_keeps_its_own_internal_pixel_type():
     """Compliance: `short` is the file's call, and on native intensities it is correct.
 

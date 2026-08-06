@@ -30,6 +30,12 @@ out/
 output/
 outputs/
 data/
+# Exception: test fixtures. `data/` above matches `tests/data/` at any depth, which
+# silently kept a committed-looking test fixture out of the repository and turned CI
+# red with a FileNotFoundError. Re-including the directory does not weaken the rules
+# that matter: every image pattern above (*.dcm, *.nii.gz, *.mha, ...) still applies
+# *inside* it, so a stray patient slice dropped here is still ignored.
+!tests/data/
 Fixed/
 Moving/
 **/dicom_registered/
