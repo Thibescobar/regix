@@ -29,6 +29,16 @@ fails with ``FixedSmoothingPyramid: Input Primary is required but not set``.
 Every generated file is written to disk: they can be replayed as-is with the
 elastix binary, which is indispensable when investigating a case six months
 later.
+
+The reverse direction is supported too. ``StageConfig.parameter_file`` takes a
+hand-written elastix parameter file -- typically one from the elastix parameter
+zoo, or a file a site has already validated -- and uses it verbatim instead of
+building a map. That is the point: those files *are* the interchange format of
+the elastix world, so accepting them is what makes a Regix stage comparable with
+what everyone else publishes. Four keys are nevertheless re-imposed, with a
+warning, because a zoo file that disagrees with them does not merely tune the
+optimisation, it silently invalidates the geometry or the transform chain around
+it -- see ``ENFORCED_WITH_PARAMETER_FILE``.
 """
 
 from __future__ import annotations
@@ -72,6 +82,30 @@ PENALTY_METRICS = frozenset(
 
 #: Modalities treated as equivalent when choosing a metric.
 _MODALITY_FAMILIES = {"CT": "CT", "CBCT": "CT", "MR": "MR", "PT": "PT", "NM": "PT", "US": "US"}
+
+#: Keys Regix re-imposes on an externally supplied parameter file, and why. Everything
+#: else in such a file is honoured as written; these four are not tuning knobs, they are
+#: assumptions the surrounding pipeline is built on, and a file that contradicts one of
+#: them produces a plausible-looking result that is wrong:
+#:
+#: * ``UseDirectionCosines``: false makes elastix ignore the DICOM direction cosines, so
+#:   an oblique acquisition is misregistered from the first iteration. Many zoo files
+#:   predate this parameter and simply omit it -- and its elastix default is false;
+#: * ``HowToCombineTransforms``: the whole chain (``-t0`` files, ``compose()``, the
+#:   4x4 export) is written for Compose semantics. "Add" would make the composition
+#:   arithmetic in the engine wrong without any error;
+#: * ``AutomaticTransformInitialization``: Regix computes and records its own
+#:   initialisation; letting elastix add a second one makes the reported transform
+#:   disagree with the one that was applied;
+#: * ``WriteResultImage``: Regix never reads elastix's resampled output -- it resamples
+#:   the *native* moving intensities onto the original fixed grid itself. Leaving this
+#:   true only costs a resample and a write per stage.
+ENFORCED_WITH_PARAMETER_FILE: dict[str, tuple[str, ...]] = {
+    "UseDirectionCosines": ("true",),
+    "HowToCombineTransforms": ("Compose",),
+    "AutomaticTransformInitialization": ("false",),
+    "WriteResultImage": ("false",),
+}
 
 
 @dataclass
@@ -120,7 +154,14 @@ def resolve_metric(stage: StageConfig, ctx: ParamContext) -> Metric:
 
 # --------------------------------------------------------------------------- #
 def build_parameter_map(stage: StageConfig, ctx: ParamContext) -> ParameterMap:
-    """Build the elastix parameter map for one stage."""
+    """Build the elastix parameter map for one stage.
+
+    With ``stage.parameter_file`` set, the file is read and used as the map instead
+    of being generated; see ``_from_parameter_file``.
+    """
+    if stage.parameter_file is not None:
+        return _from_parameter_file(stage, ctx)
+
     metric = resolve_metric(stage, ctx)
     n_img = max(1, ctx.n_channels if metric in (Metric.FEATURES_NCC, Metric.FEATURES_MSE) else 1)
     transform = _TRANSFORM_NAMES[stage.type]
@@ -229,7 +270,84 @@ def build_parameter_map(stage: StageConfig, ctx: ParamContext) -> ParameterMap:
     for key, value in stage.extra.items():
         pmap[key] = _as_tuple(value)
 
-    _validate(pmap)
+    _validate(pmap, dimension=ctx.dimension)
+    return pmap
+
+
+# --------------------------------------------------------------------------- #
+def _from_parameter_file(stage: StageConfig, ctx: ParamContext) -> ParameterMap:
+    """Use a hand-written elastix parameter file as the map for one stage.
+
+    Honoured verbatim except for ``ENFORCED_WITH_PARAMETER_FILE``, then
+    ``stage.extra`` on top, then the same validation as a generated map. Two
+    consistency checks are refusals rather than warnings, because both fail
+    *silently* otherwise:
+
+    * ``stage.type`` must match the file's ``(Transform ...)``. Regix reads
+      ``stage.type`` downstream to decide whether a stage produced a linear
+      transform it can decompose and export (engine.py); a file declaring
+      BSplineTransform under ``type: affine`` would have Regix parse a B-spline
+      result as an affine matrix;
+    * the file's dimension must match the pair being registered, otherwise elastix
+      aborts with a message that says nothing about the parameter file.
+    """
+    path = Path(stage.parameter_file)  # type: ignore[arg-type]
+    pmap = read_parameter_file(path)
+    if not pmap:
+        raise ValueError(
+            f"{path} contains no elastix parameter. Expected lines of the form "
+            '(Key "value") or (Key 3.0) -- is this really an elastix parameter file?'
+        )
+    for key in ("Transform", "Metric"):
+        if key not in pmap:
+            raise ValueError(f"{path} declares no ({key} ...): not a usable elastix parameter file")
+
+    expected_transform = _TRANSFORM_NAMES[stage.type]
+    if pmap["Transform"][0] != expected_transform:
+        matching = [
+            name for name, elastix_name in _TRANSFORM_NAMES.items() if elastix_name == pmap["Transform"][0]
+        ]
+        raise ValueError(
+            f"{path.name} declares (Transform \"{pmap['Transform'][0]}\") but the stage says "
+            f"type: {stage.type.value} (= {expected_transform}). Declare "
+            + (f"type: {matching[0].value}" if matching else "a matching stage type")
+            + " so that Regix interprets the stage result correctly."
+        )
+
+    for key, value in ENFORCED_WITH_PARAMETER_FILE.items():
+        current = tuple(pmap.get(key, ()))
+        if current and current != value:
+            log.warning(
+                "%s: (%s %s) overridden to %s -- Regix requires it, see "
+                "ENFORCED_WITH_PARAMETER_FILE",
+                path.name,
+                key,
+                " ".join(current),
+                " ".join(value),
+            )
+        pmap[key] = value
+
+    # A single-metric file cannot consume feature channels: elastix pairs metric i with
+    # image i, so only channel 0 would reach the criterion. Silent otherwise.
+    if ctx.features_available and ctx.n_channels > 1:
+        n_image_metrics = sum(1 for m in pmap["Metric"] if m not in PENALTY_METRICS)
+        if n_image_metrics < ctx.n_channels:
+            log.warning(
+                "%s declares %d image metric(s) for %d feature channels: elastix will only see "
+                "channel 0. Use MultiMetricMultiResolutionRegistration with one metric per "
+                "channel in the file, or drop parameter_file for this stage.",
+                path.name,
+                n_image_metrics,
+                ctx.n_channels,
+            )
+
+    for key, value in stage.extra.items():
+        pmap[key] = _as_tuple(value)
+
+    _validate(pmap, dimension=ctx.dimension)
+    log.info(
+        "stage %s: parameters read from %s (%d keys)", stage.display_name, path.name, len(pmap)
+    )
     return pmap
 
 
@@ -253,22 +371,45 @@ def _as_tuple(value: Any) -> tuple[str, ...]:
     return (str(value),)
 
 
-def _validate(pmap: ParameterMap) -> None:
-    """Checks that avoid cryptic elastix messages."""
+def _validate(pmap: ParameterMap, dimension: int | None = None) -> None:
+    """Checks that avoid cryptic elastix messages.
+
+    Keys absent from ``pmap`` are treated as "elastix will use its default", which is
+    what an externally supplied parameter file relies on. A generated map always sets
+    all of them, so nothing is weakened on that path -- but the three keys the checks
+    themselves need are required either way.
+    """
+    for key in ("Transform", "Metric", "NumberOfResolutions"):
+        if key not in pmap:
+            raise ValueError(f"the parameter map declares no ({key} ...)")
+
     n_metrics = len(pmap["Metric"])
     for key in ("FixedImagePyramid", "MovingImagePyramid", "Interpolator", "ImageSampler"):
-        if len(pmap[key]) != n_metrics:
+        values = pmap.get(key)
+        if values is not None and len(values) != n_metrics:
             raise ValueError(
-                f"{key} has {len(pmap[key])} entries for {n_metrics} metrics: elastix requires "
+                f"{key} has {len(values)} entries for {n_metrics} metrics: elastix requires "
                 "one entry per metric"
             )
-    if n_metrics > 1 and pmap["Registration"][0] != "MultiMetricMultiResolutionRegistration":
-        raise ValueError("several metrics require MultiMetricMultiResolutionRegistration")
+    # Absent Registration means the elastix default, which is single-metric.
+    registration = pmap.get("Registration", ("MultiResolutionRegistration",))[0]
+    if n_metrics > 1 and registration != "MultiMetricMultiResolutionRegistration":
+        raise ValueError(
+            f"{n_metrics} metrics require MultiMetricMultiResolutionRegistration, "
+            f"not {registration}"
+        )
     n_res = int(pmap["NumberOfResolutions"][0])
     if "GridSpacingSchedule" in pmap and len(pmap["GridSpacingSchedule"]) not in (n_res, n_res * 3):
         raise ValueError(
             f"GridSpacingSchedule has {len(pmap['GridSpacingSchedule'])} values for {n_res} resolutions"
         )
+    if dimension is not None:
+        for key in ("FixedImageDimension", "MovingImageDimension"):
+            declared = pmap.get(key)
+            if declared and int(declared[0]) != dimension:
+                raise ValueError(
+                    f"{key} is {declared[0]} but the volumes are {dimension}D"
+                )
 
 
 # --------------------------------------------------------------------------- #
@@ -349,18 +490,63 @@ def _split_values(body: str) -> list[str]:
     return out
 
 
-def describe_stage(stage: StageConfig, ctx: ParamContext) -> dict[str, Any]:
-    """Readable summary of a stage, for the logs and the QC report."""
-    metric = resolve_metric(stage, ctx)
+def describe_stage(
+    stage: StageConfig, ctx: ParamContext, pmap: ParameterMap | None = None
+) -> dict[str, Any]:
+    """Readable summary of a stage, for the logs and the QC report.
+
+    Pass the built ``pmap`` whenever it is available: the summary then reports what
+    elastix was actually handed rather than what the configuration asked for. The two
+    differ whenever ``stage.extra`` or ``stage.parameter_file`` is in play, and a
+    manifest that reports the request instead of the effective value is worse than no
+    manifest at all.
+    """
+    if pmap is None:
+        metric = resolve_metric(stage, ctx)
+        with_features = metric in (Metric.FEATURES_NCC, Metric.FEATURES_MSE)
+        return {
+            "stage": stage.display_name,
+            "transform": _TRANSFORM_NAMES[stage.type],
+            "metric": metric.value,
+            "metric_elastix": _METRIC_NAMES[metric],
+            "channels": ctx.n_channels if with_features else 1,
+            "resolutions": stage.n_resolutions,
+            "iterations": stage.max_iterations,
+            "samples": stage.n_spatial_samples,
+            "masked": bool(stage.use_masks and ctx.has_mask),
+            "grid_mm": stage.final_grid_spacing_mm if stage.type is TransformType.BSPLINE else None,
+            "parameter_file": None,
+        }
+
+    image_metrics = [m for m in pmap["Metric"] if m not in PENALTY_METRICS]
+    elastix_metric = image_metrics[0] if image_metrics else pmap["Metric"][0]
+    grid = pmap.get("FinalGridSpacingInPhysicalUnits")
     return {
         "stage": stage.display_name,
-        "transform": _TRANSFORM_NAMES[stage.type],
-        "metric": metric.value,
-        "metric_elastix": _METRIC_NAMES[metric],
-        "channels": ctx.n_channels if metric in (Metric.FEATURES_NCC, Metric.FEATURES_MSE) else 1,
-        "resolutions": stage.n_resolutions,
-        "iterations": stage.max_iterations,
-        "samples": stage.n_spatial_samples,
+        "transform": pmap["Transform"][0],
+        "metric": _metric_label(elastix_metric, len(image_metrics)),
+        "metric_elastix": elastix_metric,
+        "channels": len(image_metrics) if len(image_metrics) > 1 else 1,
+        "resolutions": int(pmap["NumberOfResolutions"][0]),
+        "iterations": int(pmap.get("MaximumNumberOfIterations", ("0",))[0]),
+        "samples": int(pmap.get("NumberOfSpatialSamples", ("0",))[0]),
         "masked": bool(stage.use_masks and ctx.has_mask),
-        "grid_mm": stage.final_grid_spacing_mm if stage.type is TransformType.BSPLINE else None,
+        "grid_mm": float(grid[0]) if grid else None,
+        "parameter_file": str(stage.parameter_file) if stage.parameter_file else None,
     }
+
+
+def _metric_label(elastix_metric: str, n_image_metrics: int) -> str:
+    """Regix-level name of an elastix metric, for the logs and the report.
+
+    ``AdvancedNormalizedCorrelation`` covers both ``ncc`` and ``features_ncc`` -- the
+    number of image metrics is what distinguishes them.
+    """
+    multichannel = n_image_metrics > 1
+    if elastix_metric == "AdvancedMattesMutualInformation":
+        return Metric.MI.value
+    if elastix_metric == "AdvancedNormalizedCorrelation":
+        return (Metric.FEATURES_NCC if multichannel else Metric.NCC).value
+    if elastix_metric == "AdvancedMeanSquares":
+        return (Metric.FEATURES_MSE if multichannel else Metric.MSE).value
+    return elastix_metric

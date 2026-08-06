@@ -217,9 +217,6 @@ their own terms, which you must review before any commercial or clinical use:
 - elastix / itk-elastix .... Apache License 2.0
 - SimpleITK / ITK .......... Apache License 2.0
 - anatomix ................. MIT License (weights included in that project)
-- SuPreM ................... code derived from NVIDIA MONAI; weights released
-                             for research use (AbdomenAtlas); the project
-                             states that patents are pending
 - TotalSegmentator ......... see that project's own license terms
 - MIND-SSC descriptor ...... re-implemented in this repository from the method
                              described in Heinrich et al., "Towards Realtime

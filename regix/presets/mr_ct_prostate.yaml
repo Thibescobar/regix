@@ -18,7 +18,11 @@ preprocess:
     percentile_clip: null
   moving:
     percentile_clip: [0.5, 99.5]
-    n4_bias_correction: true
+    # N4 off by default like everywhere else. This is the preset where it is most
+    # defensible -- pelvic T2 with low CT contrast, and an endorectal or surface coil
+    # produces a real gradient -- so turn it on here first if the criterion looks
+    # driven by intensity shading rather than anatomy.
+    n4_bias_correction: false
 
 features:
   enabled: auto

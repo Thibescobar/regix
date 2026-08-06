@@ -72,6 +72,71 @@ def test_rigid_recovers_the_ground_truth(tmp_path, rigid_pair):
     assert np.allclose(result.registered_image.GetSpacing(), fixed.GetSpacing())
 
 
+#: A zoo-shaped rigid parameter file: recursive pyramids, StandardGradientDescent with
+#: its SP_* schedule, a Random sampler, no UseDirectionCosines at all (its elastix
+#: default is false), HowToCombineTransforms "Add" and WriteResultImage "true". None of
+#: that is what Regix generates, which is the point.
+_ZOO_RIGID = """\
+// zoo-style rigid parameter file
+(Registration "MultiResolutionRegistration")
+(Transform "EulerTransform")
+(Metric "AdvancedNormalizedCorrelation")
+(Optimizer "StandardGradientDescent")
+(FixedImagePyramid "FixedRecursiveImagePyramid")
+(MovingImagePyramid "MovingRecursiveImagePyramid")
+(Interpolator "BSplineInterpolator")
+(ResampleInterpolator "FinalBSplineInterpolator")
+(Resampler "DefaultResampler")
+(ImageSampler "Random")
+(NumberOfResolutions 2)
+(MaximumNumberOfIterations 200)
+(NumberOfSpatialSamples 2048)
+(SP_a 1000.0)
+(SP_alpha 0.602)
+(SP_A 50.0)
+(AutomaticScalesEstimation "true")
+(DefaultPixelValue 0)
+(WriteResultImage "true")
+(HowToCombineTransforms "Add")
+"""
+
+
+def test_a_zoo_parameter_file_drives_a_real_registration(tmp_path, rigid_pair):
+    """elastix must accept what Regix hands it, not just pass our own validation.
+
+    The unit tests check the map that is built; only a run proves that a stage described
+    entirely by a third-party file actually registers.
+    """
+    from regix.pipeline import RegistrationPipeline
+
+    paths, _ = rigid_pair
+    zoo = tmp_path / "Par0000.rigid.txt"
+    zoo.write_text(_ZOO_RIGID, encoding="utf-8")
+
+    cfg = _config(tmp_path, stages=[{"type": "rigid", "parameter_file": str(zoo)}])
+    result = RegistrationPipeline(cfg).run(paths["fixed"], paths["moving"], tmp_path / "out")
+
+    similarity = result.metrics["similarity"]
+    assert similarity["ncc_after"] > similarity["ncc_before"]
+
+    # The stage is reported from the file, so the manifest describes the actual run.
+    stage = result.stages[0]
+    assert stage["transform"] == "EulerTransform"
+    assert stage["resolutions"] == 2 and stage["iterations"] == 200
+    assert stage["parameter_file"] == str(zoo)
+
+    # The effective map on disk keeps the file's tuning and carries the enforced keys.
+    effective = (tmp_path / "out" / "elastix" / "stage00_rigid" / "parameters.txt").read_text(
+        encoding="utf-8"
+    )
+    assert '(Optimizer "StandardGradientDescent")' in effective
+    assert '(FixedImagePyramid "FixedRecursiveImagePyramid")' in effective
+    assert "(SP_a 1000.0)" in effective
+    assert '(UseDirectionCosines "true")' in effective  # absent from the file
+    assert '(HowToCombineTransforms "Compose")' in effective  # the file said "Add"
+    assert '(WriteResultImage "false")' in effective  # the file said "true"
+
+
 def test_output_keeps_native_intensities(tmp_path, rigid_pair):
     """The delivered volume keeps its HU: it is not normalised by the preprocessing."""
     from regix.pipeline import RegistrationPipeline

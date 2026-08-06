@@ -9,9 +9,8 @@ Three building blocks, deliberately independent:
   different modalities comparable voxel by voxel. Multimodal registration then
   becomes a monomodal problem (cross correlation over feature channels instead of
   mutual information over intensities).
-* ``regix.organs``: organ segmentation (SuPreM, TotalSegmentator, or user-supplied
-  masks) feeding initialization, criterion masking, per-organ cropping and quality
-  control.
+* ``regix.organs``: organ segmentation (TotalSegmentator, or user-supplied masks)
+  feeding initialization, criterion masking, per-organ cropping and quality control.
 
 See ``DISCLAIMER`` below for the regulatory statement, which is the single wording
 reused by the run manifest, the HTML report, the API and the LICENSE.

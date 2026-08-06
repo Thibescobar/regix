@@ -30,9 +30,8 @@ dependencies = [
     # any more (SimpleElastix is no longer distributed for recent Python versions);
     # itk-elastix is the binding maintained by the elastix authors.
     "itk-elastix>=0.20",
-    "SimpleITK>=2.2",       # DICOM I/O, morphology, transforms, metrics
+    "SimpleITK>=2.2",       # DICOM I/O, morphology, transforms, metrics, box filtering
     "numpy>=1.24",
-    "scipy>=1.10",
     "pydantic>=2.5",
     "PyYAML>=6.0",
     "typer>=0.12",
@@ -50,13 +49,10 @@ features = [
     "huggingface_hub>=0.20",
     "anatomix @ git+https://github.com/neel-dey/anatomix.git",
 ]
-# Organ segmentation: either SuPreM (abdominal CT, research-only weights) or TotalSegmentator.
-organs = [
-    "torch>=2.1",
-    "monai>=1.3",
-    "nibabel>=5.0",
-]
+# Organ segmentation. The one automatic backend is TotalSegmentator, which pulls its
+# own torch/nibabel; `organs` is kept as an alias so documented installs keep working.
 totalsegmentator = ["TotalSegmentator>=2.2"]
+organs = ["regix[totalsegmentator]"]
 api = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
 # ruff is pinned to a minor range, unlike the rest: it is the one tool whose new
 # releases add rules to the sets selected below, so an unpinned `ruff>=x` turns CI

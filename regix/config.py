@@ -52,7 +52,6 @@ class InitMode(str, Enum):
 class OrganBackend(str, Enum):
     NONE = "none"
     EXTERNAL = "external"        # pre-computed NIfTI masks (the most common clinical case)
-    SUPREM = "suprem"            # SuPreM (abdominal CT, 25 classes)
     TOTALSEGMENTATOR = "totalsegmentator"
 
 
@@ -77,19 +76,41 @@ class ImagePrep(BaseModel):
     clip: tuple[float, float] | None = Field(
         default=None, description="Explicit intensity bounds (take priority over window)."
     )
-    percentile_clip: tuple[float, float] | None = Field(
-        default=(0.5, 99.5),
-        description="Robustness percentiles, applied when clip/window are absent (typical for MR/PET).",
+    percentile_clip: Literal["auto"] | tuple[float, float] | None = Field(
+        default="auto",
+        description=(
+            "Robustness percentiles, applied when clip/window are absent. Three states, "
+            "deliberately distinct: 'auto' (default) lets the modality decide -- a fixed HU "
+            "window for CT/CBCT, (0.5, 99.5) for MR, (0.0, 99.5) for PET/NM; an explicit "
+            "pair is always honoured, including on a CT, which is the right answer on a "
+            "CBCT whose HU scale is offset and where a fixed window would clip the anatomy "
+            "away; null means no percentile clipping at all. A plain default value could "
+            "not express the difference between the first two, and silently turned an "
+            "explicit request into the modality window."
+        ),
     )
     normalize: Literal["minmax", "zscore", "none"] = "minmax"
     n4_bias_correction: bool = Field(
-        default=False, description="N4 bias field correction (MR). Costly: ~30 s at 2 mm."
+        default=False,
+        description=(
+            "N4 bias field correction (MR). Off by default, and worth less to a "
+            "registration than to a segmentation: MI is a histogram statistic and barely "
+            "notices a smooth bias, and the anatomix / MIND descriptors are built to be "
+            "contrast-invariant -- MIND compares a ~10 mm neighbourhood with itself, over "
+            "which a bias field is very nearly constant, so it cancels. Turn it on for "
+            "intensity-based NCC on MR with a visible gradient (surface coil), where "
+            "SubtractMean only removes a *global* intensity change, not a spatially "
+            "varying one. Runs on the native intensities before any clipping, so the cost "
+            "follows the acquisition grid, not preprocess.working_spacing_mm."
+        ),
     )
     denoise_sigma_mm: float | None = None
 
     @field_validator("clip", "percentile_clip")
     @classmethod
     def _ordered(cls, v):
+        if isinstance(v, str):  # the "auto" sentinel carries no bounds to order
+            return v
         if v is not None and not v[0] < v[1]:
             raise ValueError(f"unordered bounds: {v}")
         return v
@@ -172,8 +193,6 @@ class OrganConfig(BaseModel):
             "wrong mask with no visible sign."
         ),
     )
-    checkpoint: Path | None = Field(default=None, description="SuPreM weights (.pth).")
-    backbone: Literal["unet", "swinunetr", "segresnet"] = "unet"
     device: Literal["auto", "cuda", "cpu"] = "auto"
     mask_dilate_mm: float = Field(
         default=8.0, description="Dilation of the criterion mask: gives the optimiser some room."
@@ -252,6 +271,20 @@ class StageConfig(BaseModel):
     automatic_scales: bool = True
     optimizer: Literal["AdaptiveStochasticGradientDescent", "StandardGradientDescent", "QuasiNewtonLBFGS"] = (
         "AdaptiveStochasticGradientDescent"
+    )
+    parameter_file: Path | None = Field(
+        default=None,
+        description=(
+            "Use a hand-written elastix parameter file for this stage (e.g. one from the "
+            "elastix parameter zoo) instead of letting Regix build the map. The file is "
+            "taken verbatim, then 'extra' is applied on top; the fields above that describe "
+            "components (metric, n_resolutions, max_iterations, sampler, optimizer, "
+            "final_grid_spacing_mm...) are ignored because the file already sets them. "
+            "'type' must still match the file's (Transform ...) -- Regix uses it downstream "
+            "to decide whether the stage result is a linear transform. Four keys are "
+            "re-imposed even if the file disagrees, and a warning says so: see "
+            "regix.registration.params.ENFORCED_WITH_PARAMETER_FILE."
+        ),
     )
     extra: dict[str, list[str] | str | float | int] = Field(
         default_factory=dict,

@@ -107,7 +107,6 @@ def environment_report() -> dict[str, Any]:
         ("SimpleITK", "simpleitk"),
         ("itk", "itk"),
         ("numpy", "numpy"),
-        ("scipy", "scipy"),
         ("torch", "torch"),
         ("monai", "monai"),
         ("anatomix", "anatomix"),

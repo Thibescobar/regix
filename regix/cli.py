@@ -113,7 +113,7 @@ def doctor() -> None:
         f"{report['simpleitk']}",
         "blocking: DICOM I/O, morphology, transforms",
     )
-    table.add_row("numpy / scipy", f"{report['numpy']} / {report['scipy']}", "blocking")
+    table.add_row("numpy", f"{report['numpy']}", "blocking")
 
     torch_ok = report["torch"] is not None
     table.add_row(
@@ -155,9 +155,8 @@ def doctor() -> None:
 
     console.print(table)
     console.print(
-        "\n[dim]Regix is research software. The segmentation weights (SuPreM, "
-        "TotalSegmentator) have their own licences: review them before any clinical or "
-        "commercial use.[/]"
+        "\n[dim]Regix is research software. The anatomix and TotalSegmentator weights "
+        "have their own licences: review them before any clinical or commercial use.[/]"
     )
     if not has_elastix:
         raise typer.Exit(code=1)
@@ -257,7 +256,7 @@ def register(
         None, "--features/--no-features", help="Force or disable the anatomix features."
     ),
     organ_backend: Optional[str] = typer.Option(
-        None, "--organ-backend", help="none | external | suprem | totalsegmentator"
+        None, "--organ-backend", help="none | external | totalsegmentator"
     ),
     fixed_mask: Optional[Path] = typer.Option(None, "--fixed-mask", help="Fixed mask / label map."),
     moving_mask: Optional[Path] = typer.Option(None, "--moving-mask", help="Moving mask / label map."),
@@ -493,26 +492,19 @@ def apply(
 def segment(
     image: Path = typer.Argument(..., help="CT volume (file or DICOM series)."),
     output: Path = typer.Option(Path("regix_masks"), "-o", "--output"),
-    backend: str = typer.Option("totalsegmentator", "--backend", help="totalsegmentator | suprem"),
-    checkpoint: Optional[Path] = typer.Option(None, "--checkpoint", help="SuPreM weights."),
     organ: list[str] = typer.Option([], "--organ", help="Restrict to the requested organs."),
 ) -> None:
-    """Segment the organs and write a label map plus one mask per organ."""
+    """Segment the organs with TotalSegmentator and write a label map plus one mask per organ."""
     import SimpleITK as sitk
 
     from regix.io.volume import load_volume
     from regix.io.writers import save_image
     from regix.organs.labels import resolve_targets
-    from regix.organs.segmenter import SupremSegmenter, TotalSegmentatorSegmenter
+    from regix.organs.segmenter import TotalSegmentatorSegmenter
 
     volume = load_volume(image)
     targets = resolve_targets(list(organ))
-    if backend == "suprem":
-        if checkpoint is None:
-            raise typer.BadParameter("--checkpoint is required for SuPreM")
-        segmenter = SupremSegmenter(checkpoint=checkpoint)
-    else:
-        segmenter = TotalSegmentatorSegmenter(roi_subset=targets or None)
+    segmenter = TotalSegmentatorSegmenter(roi_subset=targets or None)
 
     seg = segmenter.segment(volume)
     output.mkdir(parents=True, exist_ok=True)

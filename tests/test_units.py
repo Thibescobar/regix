@@ -7,6 +7,7 @@ import pathlib
 import numpy as np
 import pytest
 import SimpleITK as sitk
+import yaml
 
 from tests.conftest import known_rigid, make_phantom
 
@@ -182,6 +183,162 @@ def test_user_override_has_the_final_say():
     assert pmap["MaximumStepLength"] == ("9.5",)
 
 
+# --------------------------------------------------------------------------- #
+# Externally supplied elastix parameter files (the "parameter zoo" format)
+# --------------------------------------------------------------------------- #
+#: Shape of a published zoo file: it tunes the optimisation, omits
+#: UseDirectionCosines entirely (whose elastix default is false), and asks for the
+#: result image Regix never reads.
+_ZOO_FILE = """\
+// Example parameter file, zoo style.
+(Registration "MultiResolutionRegistration")
+(Transform "BSplineTransform")
+(Metric "AdvancedMattesMutualInformation")
+(Optimizer "StandardGradientDescent")
+(FixedImagePyramid "FixedRecursiveImagePyramid")
+(MovingImagePyramid "MovingRecursiveImagePyramid")
+(Interpolator "BSplineInterpolator")
+(ImageSampler "Random")
+(NumberOfResolutions 3)
+(MaximumNumberOfIterations 250)
+(NumberOfSpatialSamples 2048)
+(FinalGridSpacingInPhysicalUnits 16.0 16.0 16.0)
+(GridSpacingSchedule 4.0 2.0 1.0)
+(NumberOfHistogramBins 64)
+(WriteResultImage "true")
+(HowToCombineTransforms "Add")
+"""
+
+
+def _zoo_stage(tmp_path, **kwargs):
+    from regix.config import StageConfig, TransformType
+
+    path = tmp_path / "Par0001.bspline.txt"
+    path.write_text(_ZOO_FILE, encoding="utf-8")
+    kwargs.setdefault("type", TransformType.BSPLINE)
+    return StageConfig(parameter_file=path, **kwargs)
+
+
+def test_a_zoo_parameter_file_is_used_verbatim(tmp_path):
+    """The point of accepting these files is that they are honoured, not reinterpreted."""
+    from regix.registration.params import ParamContext, build_parameter_map
+
+    pmap = build_parameter_map(_zoo_stage(tmp_path), ParamContext())
+
+    # Everything the file tunes survives, including values Regix would never generate.
+    assert pmap["Optimizer"] == ("StandardGradientDescent",)
+    assert pmap["ImageSampler"] == ("Random",)
+    assert pmap["FixedImagePyramid"] == ("FixedRecursiveImagePyramid",)
+    assert pmap["NumberOfResolutions"] == ("3",)
+    assert pmap["MaximumNumberOfIterations"] == ("250",)
+    assert pmap["NumberOfHistogramBins"] == ("64",)
+    assert pmap["GridSpacingSchedule"] == ("4.0", "2.0", "1.0")
+    # ... and no bending-energy penalty was silently bolted on.
+    assert pmap["Metric"] == ("AdvancedMattesMutualInformation",)
+
+
+def test_a_zoo_file_cannot_break_the_geometry_or_the_transform_chain(tmp_path):
+    """The four keys of ENFORCED_WITH_PARAMETER_FILE are re-imposed.
+
+    Each one is a silent corruption rather than a tuning choice: a zoo file that omits
+    UseDirectionCosines gets the elastix default (false), which misregisters every
+    oblique acquisition without a single warning, and "Add" would make the engine's
+    composition arithmetic wrong.
+    """
+    from regix.registration.params import (
+        ENFORCED_WITH_PARAMETER_FILE,
+        ParamContext,
+        build_parameter_map,
+    )
+
+    pmap = build_parameter_map(_zoo_stage(tmp_path), ParamContext())
+    for key, value in ENFORCED_WITH_PARAMETER_FILE.items():
+        assert pmap[key] == value, key
+    assert pmap["HowToCombineTransforms"] == ("Compose",)  # the file said "Add"
+    assert pmap["WriteResultImage"] == ("false",)  # the file said "true"
+
+
+def test_extra_still_overrides_a_parameter_file(tmp_path):
+    from regix.registration.params import ParamContext, build_parameter_map
+
+    stage = _zoo_stage(tmp_path, extra={"MaximumNumberOfIterations": 42})
+    pmap = build_parameter_map(stage, ParamContext())
+    assert pmap["MaximumNumberOfIterations"] == ("42",)
+
+
+def test_a_parameter_file_must_agree_with_the_declared_stage_type(tmp_path):
+    """Refusal, not a warning: `type` drives how the stage result is interpreted.
+
+    The engine decides from ``stage.type`` whether to parse the stage output as a linear
+    transform. A B-spline file declared as affine would have Regix read a deformation
+    field as a 4x4 matrix -- and report a plausible one.
+    """
+    from regix.config import TransformType
+    from regix.registration.params import ParamContext, build_parameter_map
+
+    stage = _zoo_stage(tmp_path, type=TransformType.AFFINE)
+    with pytest.raises(ValueError, match="BSplineTransform"):
+        build_parameter_map(stage, ParamContext())
+
+
+def test_a_parameter_file_of_the_wrong_dimension_is_refused(tmp_path):
+    from regix.config import StageConfig, TransformType
+    from regix.registration.params import ParamContext, build_parameter_map
+
+    path = tmp_path / "twod.txt"
+    path.write_text(
+        '(Transform "EulerTransform")\n(Metric "AdvancedNormalizedCorrelation")\n'
+        '(NumberOfResolutions 3)\n(FixedImageDimension 2)\n',
+        encoding="utf-8",
+    )
+    stage = StageConfig(type=TransformType.RIGID, parameter_file=path)
+    with pytest.raises(ValueError, match="2"):
+        build_parameter_map(stage, ParamContext(dimension=3))
+
+
+def test_a_file_that_is_not_an_elastix_parameter_file_is_refused(tmp_path):
+    from regix.config import StageConfig, TransformType
+    from regix.registration.params import ParamContext, build_parameter_map
+
+    path = tmp_path / "notes.txt"
+    path.write_text("just some notes about the case\n", encoding="utf-8")
+    stage = StageConfig(type=TransformType.RIGID, parameter_file=path)
+    with pytest.raises(ValueError, match="no elastix parameter"):
+        build_parameter_map(stage, ParamContext())
+
+
+def test_a_parameter_file_stage_is_described_from_the_file(tmp_path):
+    """The manifest must report what elastix received, not what the config asked for."""
+    from regix.registration.params import ParamContext, build_parameter_map, describe_stage
+
+    stage = _zoo_stage(tmp_path)
+    ctx = ParamContext()
+    pmap = build_parameter_map(stage, ctx)
+    described = describe_stage(stage, ctx, pmap)
+
+    assert described["transform"] == "BSplineTransform"
+    assert described["metric"] == "mi"
+    assert described["metric_elastix"] == "AdvancedMattesMutualInformation"
+    assert described["resolutions"] == 3
+    assert described["iterations"] == 250
+    assert described["samples"] == 2048
+    assert described["grid_mm"] == 16.0
+    assert described["parameter_file"] == str(stage.parameter_file)
+
+
+def test_describe_stage_reports_the_effective_value_not_the_requested_one():
+    """Same guarantee on the generated path, where `extra` is the source of drift."""
+    from regix.config import StageConfig, TransformType
+    from regix.registration.params import ParamContext, build_parameter_map, describe_stage
+
+    stage = StageConfig(
+        type=TransformType.RIGID, n_resolutions=4, extra={"NumberOfResolutions": 2}
+    )
+    ctx = ParamContext()
+    described = describe_stage(stage, ctx, build_parameter_map(stage, ctx))
+    assert described["resolutions"] == 2, "the manifest reported the request, not the run"
+
+
 def test_elastix_engine_is_available():
     """Guard rail: SimpleITK no longer bundles elastix, itk-elastix must be present."""
     from regix.registration.itk_bridge import engine_available
@@ -218,6 +375,189 @@ def test_image_count_required_by_elastix():
     bspline_mono = build_parameter_map(StageConfig(type=TransformType.BSPLINE), ctx_mono)
     assert len(bspline_mono["Metric"]) == 2
     assert required_image_count(bspline_mono) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Intensity preparation: resolving the modality defaults
+# --------------------------------------------------------------------------- #
+def test_an_unspecified_ct_clipping_becomes_the_hu_window():
+    from regix.config import ImagePrep
+    from regix.preprocess.intensity import HU_WINDOWS, resolve_prep
+
+    # What `base.yaml` produces: normalize set, nothing said about clipping.
+    prep = ImagePrep(normalize="minmax")
+    resolved = resolve_prep(prep, "CT")
+    assert resolved.window == "ct_registration"
+    assert resolved.percentile_clip is None
+    assert HU_WINDOWS[resolved.window] == (-450.0, 450.0)
+
+
+def test_an_explicit_percentile_clip_on_a_ct_is_honoured():
+    """Regression: the detection used to be `percentile_clip == (0.5, 99.5)` -- the default.
+
+    An explicit request for robust percentiles was therefore indistinguishable from
+    silence, and got silently replaced by the HU window. That is a legitimate request on
+    a CBCT whose HU scale is offset, where a fixed window clips the anatomy away.
+    """
+    from regix.config import ImagePrep
+    from regix.preprocess.intensity import resolve_prep
+
+    prep = ImagePrep(percentile_clip=(0.5, 99.5))
+    resolved = resolve_prep(prep, "CT")
+    assert resolved.percentile_clip == (0.5, 99.5)
+    assert resolved.window is None
+
+
+def test_the_auto_sentinel_survives_a_configuration_round_trip():
+    """The reason the sentinel is a value and not `model_fields_set`.
+
+    `with_overrides` rebuilds the configuration through model_dump/model_validate -- the
+    CLI, the API and the pipeline test helpers all go through it -- which marks every
+    field as explicitly set. A value-based sentinel is the only one that survives.
+    """
+    from regix.config import RegistrationConfig, load_preset
+
+    cfg = load_preset("base")
+    assert cfg.preprocess.fixed.percentile_clip == "auto"
+
+    merged = cfg.with_overrides(preprocess={"working_spacing_mm": 1.0})
+    assert merged.preprocess.fixed.percentile_clip == "auto"
+
+    reloaded = RegistrationConfig.model_validate(yaml.safe_load(merged.to_yaml()))
+    assert reloaded.preprocess.fixed.percentile_clip == "auto"
+
+
+def test_resolve_prep_leaves_an_explicit_choice_alone_and_is_idempotent():
+    from regix.config import ImagePrep
+    from regix.preprocess.intensity import resolve_prep
+
+    # window + percentile_clip: null, the shape every CT preset uses
+    explicit = ImagePrep(window="ct_liver", percentile_clip=None)
+    assert resolve_prep(explicit, "CT") is explicit
+
+    once = resolve_prep(ImagePrep(normalize="minmax"), "MR")
+    assert resolve_prep(once, "CT") == once, "resolution must not cascade on a second call"
+
+
+def test_an_auto_prep_is_never_applied_unresolved(ct_phantom):
+    """Guard rail: applying "auto" needs the modality, and guessing it is what broke."""
+    from regix.config import ImagePrep
+    from regix.io.volume import Volume
+    from regix.preprocess.intensity import resolve_clip_bounds
+
+    image, _ = ct_phantom
+    with pytest.raises(ValueError, match="auto"):
+        resolve_clip_bounds(Volume(image=image, modality="CT"), ImagePrep())
+
+
+def test_n4_runs_before_clipping_and_percentiles_follow_it():
+    """Order guard: N4 -> clipping, with the percentiles measured after the correction.
+
+    A bias field is defined on the acquired signal, so estimating it after a window has
+    truncated that signal estimates it on a distorted version. The observable
+    consequence of getting this wrong is the clip bounds: with N4 first they are the
+    percentiles of the *corrected* volume, which is what actually gets clipped.
+    """
+    from regix.config import ImagePrep
+    from regix.io.volume import Volume
+    from regix.preprocess.intensity import apply_intensity_prep, resolve_clip_bounds
+
+    image, _ = make_phantom("MR", noise=4.0, seed=5)
+    # A strong multiplicative gradient along z: exactly what N4 is meant to remove.
+    arr = sitk.GetArrayFromImage(sitk.Cast(image, sitk.sitkFloat32))
+    ramp = np.linspace(0.45, 1.9, arr.shape[0], dtype=np.float32)[:, None, None]
+    biased = sitk.GetImageFromArray(arr * ramp)
+    biased.CopyInformation(image)
+    volume = Volume(image=biased, modality="MR")
+
+    prep = ImagePrep(percentile_clip=(0.5, 99.5), n4_bias_correction=True, normalize="none")
+    out = apply_intensity_prep(volume, prep)
+    assert out.meta["intensity_prep"]["n4"] is True
+
+    applied = out.meta["intensity_prep"]["clip"]
+    uncorrected = resolve_clip_bounds(volume, prep)  # percentiles of the biased volume
+    assert uncorrected is not None
+    # The bounds actually used must be the corrected volume's, not the biased one's.
+    assert applied != [round(uncorrected[0], 4), round(uncorrected[1], 4)], (
+        "clip bounds were measured before N4: they do not describe the clipped data"
+    )
+
+
+def test_no_bundled_preset_enables_n4_by_default():
+    """N4 stays opt-in: it is worth far less to a registration than to a segmentation."""
+    from regix.config import available_presets, load_preset
+
+    for name in available_presets():
+        cfg = load_preset(name)
+        for side in ("fixed", "moving"):
+            prep = getattr(cfg.preprocess, side)
+            assert not prep.n4_bias_correction, f"{name}.{side} enables N4"
+
+
+def test_every_preset_resolves_to_the_clipping_it_declares():
+    """No bundled preset may have its explicit intent overwritten by the defaults."""
+    from regix.config import available_presets, load_preset
+    from regix.preprocess.intensity import resolve_prep
+
+    for name in available_presets():
+        cfg = load_preset(name)
+        for side, modality in (("fixed", cfg.fixed_modality), ("moving", cfg.moving_modality)):
+            prep = getattr(cfg.preprocess, side)
+            resolved = resolve_prep(prep, modality)
+            if prep.percentile_clip != "auto":
+                assert resolved is prep, f"{name}.{side}: declared clipping was overridden"
+            else:
+                assert resolved.percentile_clip != "auto", f"{name}.{side}: sentinel survived"
+
+
+def test_the_effective_config_reports_the_clipping_that_was_applied(tmp_path):
+    """`config_effective.yaml` must not disagree with the manifest it sits next to.
+
+    Observed on a real run: the manifest recorded clip [-450, 450] while the effective
+    configuration still advertised percentile_clip [0.5, 99.5].
+    """
+    import json
+
+    from regix.config import RegistrationConfig, load_preset
+    from regix.io.volume import Volume
+    from regix.pipeline import RegistrationPipeline
+
+    fixed, _ = make_phantom("CT", seed=1)
+    moving, _ = make_phantom("CT", seed=2)
+    cfg = load_preset("base").with_overrides(
+        fixed_modality="CT",
+        moving_modality="CT",
+        preprocess={"working_spacing_mm": 4.0},
+        stages=[{"type": "rigid", "n_resolutions": 1, "max_iterations": 8}],
+        qc={"enabled": False, "report_html": False},
+        output={"dir": str(tmp_path / "out"), "overwrite": True},
+        runtime={"log_level": "WARNING"},
+    )
+    result = RegistrationPipeline(cfg).run(
+        Volume(image=fixed, modality="CT"), Volume(image=moving, modality="CT"), tmp_path / "out"
+    )
+
+    saved = RegistrationConfig.model_validate(
+        yaml.safe_load(pathlib.Path(result.outputs["config"]).read_text(encoding="utf-8"))
+    )
+    assert saved.preprocess.fixed.window == "ct_registration"
+    assert saved.preprocess.fixed.percentile_clip is None
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    applied = next(s for s in manifest["steps"] if s["name"] == "preprocessing")
+    assert applied["fixed"]["clip"] == [-450.0, 450.0]
+    assert manifest["config"]["preprocess"]["fixed"]["window"] == "ct_registration"
+
+
+def test_the_configuration_object_is_not_mutated_by_a_run():
+    """A pipeline reused for a second pair must not inherit the first pair's modality."""
+    from regix.config import load_preset
+    from regix.preprocess.intensity import resolve_prep
+
+    cfg = load_preset("base")
+    before = cfg.preprocess.fixed.model_dump()
+    resolve_prep(cfg.preprocess.fixed, "CT", "fixed")
+    assert cfg.preprocess.fixed.model_dump() == before
 
 
 # --------------------------------------------------------------------------- #
@@ -509,6 +849,44 @@ def test_a_missing_measurement_warns_rather_than_fails():
 # --------------------------------------------------------------------------- #
 # MIND descriptor (the CPU multimodal path)
 # --------------------------------------------------------------------------- #
+def test_box_mean_matches_a_separable_reference():
+    """Guards the removal of scipy from the dependency list.
+
+    ``_box_mean`` replaced ``scipy.ndimage.uniform_filter(..., mode="nearest")`` with
+    ITK's MeanImageFilter. The reference here is an independent separable box mean
+    written from the definition -- deliberately not scipy, so the test keeps working in
+    an environment where scipy is not installed, which is the whole point of the change.
+    Note that ``sitk.BoxMean`` is *not* a valid substitute: it normalises by the
+    in-bounds voxel count instead of replicating the edge voxel (~20 % disagreement).
+    """
+    from regix.features.mind import _box_mean
+
+    def reference(volume: np.ndarray, radius: int) -> np.ndarray:
+        out = volume.astype(np.float64)
+        size = 2 * radius + 1
+        for axis in range(volume.ndim):
+            padded = np.pad(
+                out,
+                [(radius, radius) if ax == axis else (0, 0) for ax in range(volume.ndim)],
+                mode="edge",
+            )
+            stacked = np.stack(
+                [np.take(padded, np.arange(k, k + out.shape[axis]), axis=axis) for k in range(size)]
+            )
+            out = stacked.mean(axis=0)
+        return out
+
+    rng = np.random.default_rng(7)
+    for shape in [(9, 11, 13), (4, 4, 4), (3, 20, 17)]:
+        for radius in (1, 2, 3):
+            volume = (rng.random(shape) * 3.0).astype(np.float32)
+            got = _box_mean(volume, radius)
+            expected = reference(volume, radius)
+            scale = float(np.abs(expected).max())
+            assert got.shape == volume.shape
+            assert np.abs(got - expected).max() / scale < 1e-5, (shape, radius)
+
+
 def test_mind_localises_better_than_intensities_across_modalities():
     """What matters for registration is not absolute correlation but **peak sharpness**.
 

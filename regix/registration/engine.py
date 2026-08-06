@@ -175,7 +175,7 @@ class ElastixEngine:
             pmap = build_parameter_map(stage, stage_ctx)
             write_parameter_file(pmap, stage_dir / "parameters.txt")
             n_images = required_image_count(pmap)
-            description = describe_stage(stage, stage_ctx)
+            description = describe_stage(stage, stage_ctx, pmap)
             log.info(
                 "stage %d/%d: %s | %s | %d channel(s) -> %d elastix image(s) | %d resolutions | masked=%s",
                 index + 1,

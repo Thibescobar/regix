@@ -1,28 +1,29 @@
 """Obtaining organ masks.
 
-Three routes, in decreasing order of clinical realism:
+Two routes, in decreasing order of clinical realism:
 
 1. ``external`` -- the masks already exist (exported radiotherapy contours,
    outputs of a tool validated on site, manual segmentations). This is the most
    frequent case and the only fully traceable one;
 2. ``totalsegmentator`` -- broad anatomical coverage, CT (and MR in v2), simple
-   installation;
-3. ``suprem`` -- abdominal CT, 25 classes, excellent results; we call the official
-   repository in a subprocess rather than re-implementing its model, so the
-   weights are used exactly as their authors intended.
+   installation, and a pip-pinnable version that the run manifest can record.
 
-LICENSING WARNING: the SuPreM weights are released for research (AbdomenAtlas),
-and the repository mentions pending patents. TotalSegmentator has its own terms.
-Check them before any commercial or clinical use -- Regix redistributes no weights.
+Regix deliberately supports **one** automatic backend. Here the masks are priors,
+never deliverables: they feed the initialisation centroids, the (dilated) elastix
+criterion mask, the ROI bounding box and the QC Dice. None of those four uses is
+sensitive at the millimetre, so a second, more accurate segmenter would buy no
+registration accuracy while doubling the nomenclatures, install paths and failure
+modes to validate.
+
+LICENSING WARNING: TotalSegmentator has its own terms. Check them before any
+commercial or clinical use -- Regix redistributes no weights.
 """
 
 from __future__ import annotations
 
 import hashlib
-import os
 import shutil
 import subprocess
-import sys
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -149,9 +150,9 @@ class ExternalSegmenter(OrganSegmenter):
             present = sorted(set(np.unique(sitk.GetArrayFromImage(lm)).tolist()) - {0})
             names = self.label_names or _sidecar_label_names(self.labelmap_path)
             if names is None:
-                # We assume NO nomenclature: mapping 1 -> 'spleen' because that is the
-                # SuPreM convention would produce a wrong organ mask with no visible
-                # sign whatsoever. Neutral names plus an explicit warning are safer.
+                # We assume NO nomenclature: mapping 1 -> 'spleen' because some tool
+                # numbers its labels that way would produce a wrong organ mask with no
+                # visible sign whatsoever. Neutral names plus a warning are safer.
                 names = {int(v): f"label_{int(v)}" for v in present}
                 log.warning(
                     "label map %s has no nomenclature (%d labels): named label_N. "
@@ -307,108 +308,6 @@ class TotalSegmentatorSegmenter(OrganSegmenter):
 
 
 # --------------------------------------------------------------------------- #
-class SupremSegmenter(OrganSegmenter):
-    """SuPreM (https://github.com/MrGiovanni/SuPreM) through its official inference script.
-
-    We do not instantiate their network ourselves: the repository evolves its
-    architecture and preprocessing together, and an approximate preprocessing
-    yields subtly wrong masks -- the worst possible case for a registration.
-    """
-
-    name = "suprem"
-
-    def __init__(
-        self,
-        checkpoint: str | Path,
-        repo_path: str | Path | None = None,
-        backbone: str = "unet",
-        device: str = "auto",
-        cache_dir: str | Path | None = None,
-        python_executable: str | None = None,
-    ):
-        self.checkpoint = Path(checkpoint)
-        self.repo_path = Path(repo_path) if repo_path else _guess_suprem_repo()
-        self.backbone = backbone
-        self.device = device
-        self.cache_dir = Path(cache_dir) if cache_dir else None
-        self.python_executable = python_executable or sys.executable
-
-        if not self.checkpoint.exists():
-            raise FileNotFoundError(
-                f"SuPreM checkpoint not found: {self.checkpoint}. "
-                "Download e.g. supervised_suprem_unet_2100.pth from "
-                "https://huggingface.co/MrGiovanni/SuPreM"
-            )
-        if self.repo_path is None or not (self.repo_path / "direct_inference" / "inference.py").exists():
-            raise FileNotFoundError(
-                "SuPreM repository not found. Clone https://github.com/MrGiovanni/SuPreM and "
-                "pass organs.suprem_repo (or set the SUPREM_REPO environment variable)."
-            )
-
-    def segment(self, volume: Volume) -> OrganSegmentation:
-        if volume.modality not in ("CT", "CBCT", "UNKNOWN"):
-            log.warning(
-                "SuPreM is trained on CT; received modality: %s. Results will be unreliable.",
-                volume.modality,
-            )
-        with tempfile.TemporaryDirectory(prefix="regix_suprem_") as tmp:
-            tmpdir = Path(tmp)
-            case = tmpdir / "data" / "case0001"
-            case.mkdir(parents=True)
-            sitk.WriteImage(volume.image, str(case / "ct.nii.gz"), True)
-            save_dir = tmpdir / "out"
-
-            cmd = [
-                self.python_executable, "-W", "ignore", "inference.py",
-                "--save_dir", str(save_dir),
-                "--checkpoint", str(self.checkpoint),
-                "--data_root_path", str(tmpdir / "data"),
-                "--backbone", self.backbone,
-                "--store_result",
-                "--suprem",
-            ]
-            env = dict(os.environ)
-            if self.device == "cpu":
-                env["CUDA_VISIBLE_DEVICES"] = ""
-            log.info("SuPreM: %s (cwd=%s)", " ".join(cmd[3:]), self.repo_path / "direct_inference")
-            proc = subprocess.run(
-                cmd,
-                cwd=str(self.repo_path / "direct_inference"),
-                env=env,
-                capture_output=True,
-                text=True,
-            )
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    "SuPreM inference failed "
-                    f"(exit code {proc.returncode}).\nstdout:\n{proc.stdout[-2000:]}\n"
-                    f"stderr:\n{proc.stderr[-2000:]}"
-                )
-
-            seg_dirs = list(save_dir.rglob("segmentations"))
-            if not seg_dirs:
-                raise RuntimeError(f"no 'segmentations' directory produced under {save_dir}")
-            lm, names = ExternalSegmenter._from_directory(seg_dirs[0])
-            seg = OrganSegmentation(
-                lm, names, self.name,
-                source=f"suprem:{self.backbone}:{self.checkpoint.name}",
-                info={"backbone": self.backbone, "checkpoint": self.checkpoint.name},
-            )
-            if not _same_grid(lm, volume.image):
-                seg = seg.resampled_to(volume.image)
-            return seg
-
-
-def _guess_suprem_repo() -> Path | None:
-    env = os.environ.get("SUPREM_REPO")
-    if env:
-        return Path(env)
-    for candidate in (Path.cwd() / "SuPreM", Path.cwd().parent / "SuPreM", Path.home() / "SuPreM"):
-        if (candidate / "direct_inference" / "inference.py").exists():
-            return candidate
-    return None
-
-
 def _sidecar_label_names(labelmap_path: Path) -> dict[int, str] | None:
     """Look for a nomenclature next to the label map.
 
@@ -469,15 +368,6 @@ def build_segmenter(
     if backend is OrganBackend.TOTALSEGMENTATOR:
         return TotalSegmentatorSegmenter(
             roi_subset=resolve_targets(config.targets) or None,
-            device=config.device,
-            cache_dir=cache_dir,
-        )
-    if backend is OrganBackend.SUPREM:
-        if config.checkpoint is None:
-            raise ValueError("organs.backend=suprem requires organs.checkpoint")
-        return SupremSegmenter(
-            checkpoint=config.checkpoint,
-            backbone=config.backbone,
             device=config.device,
             cache_dir=cache_dir,
         )

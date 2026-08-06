@@ -14,10 +14,14 @@ preprocess:
   working_spacing_mm: 1.5
   fixed:
     percentile_clip: [0.5, 99.5]
-    n4_bias_correction: true
+    # N4 off: this is the weakest case for it. Six rigid degrees of freedom over a
+    # skull, and a smooth multiplicative field cannot fabricate a spurious optimum in
+    # six parameters. Turn it on (both sides) if the sequences come from different
+    # coils and a gradient is visible across the field of view.
+    n4_bias_correction: false
   moving:
     percentile_clip: [0.5, 99.5]
-    n4_bias_correction: true
+    n4_bias_correction: false
 
 features:
   enabled: auto                  # useful between very different sequences (T1 / FLAIR / DWI)

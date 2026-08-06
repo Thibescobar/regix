@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
 ![Tests](https://img.shields.io/badge/tests-90%20passed-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-76%25-yellowgreen)
+![Coverage](https://img.shields.io/badge/coverage-77%25-yellowgreen)
 ![Linting](https://img.shields.io/badge/linting-ruff-purple)
 
 This project provides a pipeline for registering medical image volumes across
@@ -217,7 +217,7 @@ Without either, you are only measuring what you optimised.
 |---|---|---|
 | Registration engine | **elastix** via [`itk-elastix`](https://github.com/InsightSoftwareConsortium/ITKElastix) | rigid, similarity, affine, B-spline; multi-resolution; masks; multi-metric multi-channel |
 | Modality-invariant descriptors | **[anatomix](https://github.com/neel-dey/anatomix)** or **MIND-SSC** (CPU, [Heinrich 2013](https://doi.org/10.1007/978-3-642-40811-3_24)) | makes a CT and an MR comparable voxel by voxel |
-| Organ segmentation | **[TotalSegmentator](https://github.com/wasserth/TotalSegmentator)**, **[SuPreM](https://github.com/MrGiovanni/SuPreM)**, or existing masks | initialization, criterion masking, ROI cropping, per-organ Dice |
+| Organ segmentation | **[TotalSegmentator](https://github.com/wasserth/TotalSegmentator)** or existing masks | initialization, criterion masking, ROI cropping, per-organ Dice |
 | Alternative deformable stage | instance optimisation on features, in the spirit of **[ConvexAdam](https://github.com/multimodallearning/convexAdam)** | large multimodal displacements, GPU |
 
 ### Why elastix and not SimpleElastix
@@ -303,6 +303,35 @@ A linear chain is **flattened to a single affine** before writing the `.txt`
 (mathematically lossless): a four-level `CompositeTransform` is unreadable in a
 visualisation station, one affine is not.
 
+**Elastix parameter files, both directions.** Regix writes one per stage, replayable
+as-is with the elastix binary — and it reads them too. A stage can point at a
+hand-written file, typically one from the [elastix parameter
+zoo](https://elastix.dev/doxygen/parameter.html) or one a site has already validated:
+
+```yaml
+stages:
+  - type: rigid                     # must match the file's (Transform ...)
+    parameter_file: params/Par0011.rigid.txt
+    extra: { MaximumNumberOfIterations: 300 }   # still has the final say
+```
+
+The file is used verbatim: its optimizer, samplers, pyramids, schedules and metric
+weights are all honoured, and Regix bolts nothing on. Four keys are re-imposed, with a
+warning in the log, and they are not tuning knobs — each one silently invalidates the
+pipeline around the file rather than changing the optimisation:
+
+| Key | Forced to | What omitting it does |
+|---|---|---|
+| `UseDirectionCosines` | `true` | its elastix default is `false`, which misregisters every oblique acquisition with no warning — and most zoo files predate the parameter |
+| `HowToCombineTransforms` | `Compose` | the `-t0` chain, `compose()` and the 4x4 export are all written for Compose; `Add` makes the composition arithmetic wrong |
+| `AutomaticTransformInitialization` | `false` | Regix computes and records its own initialisation; a second one makes the reported transform disagree with the applied one |
+| `WriteResultImage` | `false` | Regix resamples the *native* moving intensities itself and never reads elastix's output |
+
+Two mismatches are refused outright rather than warned about, because both produce a
+plausible wrong answer: a `type:` that disagrees with the file's transform (Regix reads
+`type` to decide whether a stage result is a linear transform it can decompose), and a
+file whose dimension does not match the pair.
+
 **Quality control**, in decreasing order of reliability:
 
 1. **TRE** on landmarks — the only genuinely independent measure;
@@ -383,15 +412,15 @@ pytest tests/test_cli.py        # 16: every command and option, through the real
 pytest tests/test_dicom_io.py   #  7: synthetic DICOM series, derived series, DICOM REG
 pytest tests/test_registration_internals.py   # 19: initialization strategies, transform application
 ruff check regix tests          # lint
-pytest --cov=regix --cov-report=term-missing  # 76 % coverage
+pytest --cov=regix --cov-report=term-missing  # 77 % coverage
 ```
 
 The coverage figure on the badge is enforced, not decorative: CI runs
 `--cov-fail-under` just below it, so the badge cannot silently drift. The uncovered
 quarter is concentrated in the paths that need hardware or third-party weights this
 project does not redistribute — anatomix inference, the GPU deformable stage, the
-SuPreM/TotalSegmentator subprocess calls, and the HTTP service. Those are documented as
-unexercised rather than quietly excluded from the measurement.
+TotalSegmentator call, and the HTTP service. Those are documented as unexercised
+rather than quietly excluded from the measurement.
 
 CI runs the five suites on Python 3.10/3.11/3.12, plus a CLI smoke test that performs a
 full registration on a generated phantom and uploads the QC report as an artifact. That
@@ -430,10 +459,14 @@ modalities, and `regix presets NAME` shows what was resolved.
   `sampler: Grid` or `Full` for bit-exact reproducibility.
 - The instance-optimisation deformable stage (GPU, Adam) is not deterministic; it is
   flagged as such in the manifest.
-- The anatomix and SuPreM/TotalSegmentator code paths are written against the documented
+- The anatomix and TotalSegmentator code paths are written against the documented
   APIs of those projects but have not been executed in this environment (no GPU, weights
   not downloaded). Verify with `regix doctor` and a first run on your own data.
-- Coverage stands at 76 %; the remaining gap is the hardware-dependent code above.
+- Only one automatic segmentation backend is supported, on purpose: in Regix the masks
+  are priors (initialisation, dilated criterion mask, ROI box, Dice), never deliverables,
+  so a second segmenter would add nomenclatures and failure modes without buying
+  registration accuracy.
+- Coverage stands at 77 %; the remaining gap is the hardware-dependent code above.
 
 ## License
 
@@ -446,7 +479,6 @@ terms, which you must review before any commercial or clinical use:
 |---|---|
 | elastix / itk-elastix, SimpleITK / ITK | Apache 2.0 |
 | anatomix | MIT (weights included in that project) |
-| SuPreM | code derived from NVIDIA MONAI; weights released for research (AbdomenAtlas); the project states patents are pending |
 | TotalSegmentator | see that project's own terms |
 | MIND-SSC | re-implemented here from Heinrich et al., MICCAI 2013 |
 

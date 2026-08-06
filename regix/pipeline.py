@@ -39,6 +39,7 @@ import SimpleITK as sitk
 
 from regix.config import (
     DeformableEngine,
+    ImagePrep,
     Metric,
     OrganBackend,
     RegistrationConfig,
@@ -56,7 +57,7 @@ from regix.organs.labels import merged_profile, resolve_targets
 from regix.organs.roi import combined_mask, organ_volumes_ml, plan_roi, roi_overlap_report
 from regix.organs.segmenter import OrganSegmentation, build_segmenter
 from regix.preprocess.geometry import reorient, resample_like, resample_to_spacing
-from regix.preprocess.intensity import apply_intensity_prep, default_prep_for
+from regix.preprocess.intensity import apply_intensity_prep, resolve_prep
 from regix.qc.gates import evaluate_gates
 from regix.qc.metrics import (
     displacement_statistics,
@@ -250,9 +251,21 @@ class RegistrationPipeline:
             )
 
         # -- 4. preprocessing ------------------------------------------------ #
+        # The modality defaults are resolved once, here, and the resolved preparations
+        # are what gets written to config_effective.yaml and to the manifest below. The
+        # configuration object itself is left untouched: a pipeline reused for a second
+        # pair must not inherit the first pair's modality.
+        prep_fixed = resolve_prep(cfg.preprocess.fixed, fixed.modality, "fixed")
+        prep_moving = resolve_prep(cfg.preprocess.moving, moving.modality, "moving")
+        effective = cfg.model_copy(
+            update={"preprocess": cfg.preprocess.model_copy(
+                update={"fixed": prep_fixed, "moving": prep_moving}
+            )}
+        )
+        manifest.config = effective.model_dump(mode="json")
         with manifest.step("preprocessing") as info:
-            fixed_work = self._prepare(fixed, "fixed")
-            moving_work = self._prepare(moving, "moving")
+            fixed_work = self._prepare(fixed, prep_fixed)
+            moving_work = self._prepare(moving, prep_moving)
             info["fixed"] = {
                 "size": list(fixed_work.size),
                 "spacing": [round(v, 3) for v in fixed_work.spacing],
@@ -424,7 +437,9 @@ class RegistrationPipeline:
             )
             if cfg.output.write_dicom:
                 self._export_dicom(registered, fixed, moving, applied, out_dir, outputs, manifest)
-            outputs["config"] = self.config.save(out_dir / "config_effective.yaml")
+            # `effective`, not `self.config`: the file has to describe the run that
+            # happened, resolved modality defaults included.
+            outputs["config"] = effective.save(out_dir / "config_effective.yaml")
             info["files"] = {k: str(v) for k, v in outputs.items()}
 
         # -- 14. report ------------------------------------------------------ #
@@ -531,26 +546,9 @@ class RegistrationPipeline:
             results.append(seg)
         return results[0], results[1]
 
-    def _prepare(self, volume: Volume, side: str) -> Volume:
+    def _prepare(self, volume: Volume, prep: ImagePrep) -> Volume:
+        """Apply an already-resolved preparation (see ``resolve_prep``) to one volume."""
         cfg = self.config.preprocess
-        prep = getattr(cfg, side)
-        # Modality default preparation when the user imposed nothing.
-        if prep.window is None and prep.clip is None and prep.percentile_clip == (0.5, 99.5):
-            suggested = default_prep_for(volume.modality)
-            prep = prep.model_copy(
-                update={
-                    "window": suggested.window,
-                    "percentile_clip": suggested.percentile_clip,
-                    "normalize": prep.normalize,
-                }
-            )
-            log.debug(
-                "%s: default preparation for %s -> %s",
-                side,
-                volume.modality,
-                prep.window or "percentiles",
-            )
-
         work = volume
         if cfg.orientation:
             work = work.with_image(reorient(work.image, cfg.orientation))

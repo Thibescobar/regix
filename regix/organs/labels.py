@@ -2,8 +2,9 @@
 
 Two things live here:
 
-1. the **translation** between the nomenclatures of the segmenters (SuPreM /
-   AbdomenAtlas, TotalSegmentator) and a single canonical Regix name;
+1. the **translation** between the nomenclatures met in the wild (TotalSegmentator,
+   exported radiotherapy structures, hand-named mask files) and a single canonical
+   Regix name;
 2. a **per-organ registration profile**: relevant HU window, mask margin,
    expected deformability, recommended stages. That is what makes the
    registration organ-aware instead of applying one setting to the whole body --
@@ -14,58 +15,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# --------------------------------------------------------------------------- #
-# SuPreM / AbdomenAtlas 1.1: label index -> canonical Regix name
-# --------------------------------------------------------------------------- #
-SUPREM_LABELS: dict[int, str] = {
-    1: "spleen",
-    2: "kidney_right",
-    3: "kidney_left",
-    4: "gallbladder",
-    5: "esophagus",
-    6: "liver",
-    7: "stomach",
-    8: "aorta",
-    9: "inferior_vena_cava",
-    10: "portal_vein_and_splenic_vein",
-    11: "pancreas",
-    12: "adrenal_gland_right",
-    13: "adrenal_gland_left",
-    14: "duodenum",
-    15: "hepatic_vessel",
-    16: "lung_right",
-    17: "lung_left",
-    18: "colon",
-    19: "small_bowel",
-    20: "rectum",
-    21: "urinary_bladder",
-    22: "prostate",
-    23: "femur_left",
-    24: "femur_right",
-    25: "celiac_trunk",
-    26: "kidney_tumor",
-    27: "liver_tumor",
-    28: "pancreas_tumor",
-    29: "hepatic_vessel_tumor",
-    30: "lung_tumor",
-    31: "colon_tumor",
-    32: "kidney_cyst",
-}
-
-#: Synonyms found in segmenter outputs -> canonical name.
+#: Synonyms found in mask file names and label sidecars -> canonical name.
+#: Regix reads organ names from file names (``ExternalSegmenter._from_directory``),
+#: so this table is what makes a directory of third-party masks usable without
+#: renaming anything.
 ORGAN_ALIASES: dict[str, str] = {
-    # SuPreM
-    "gall_bladder": "gallbladder",
-    "postcava": "inferior_vena_cava",
-    "intestine": "small_bowel",
-    "bladder": "urinary_bladder",
-    "celiac_truck": "celiac_trunk",  # typo present in the SuPreM repository
+    # Side written as a prefix rather than a suffix
     "left_kidney": "kidney_left",
     "right_kidney": "kidney_right",
     "left_lung": "lung_left",
     "right_lung": "lung_right",
     "left_head_of_femur": "femur_left",
     "right_head_of_femur": "femur_right",
+    # Anatomical synonyms
+    "gall_bladder": "gallbladder",
+    "postcava": "inferior_vena_cava",
+    "intestine": "small_bowel",
+    "bladder": "urinary_bladder",
     # TotalSegmentator v2
     "adrenal_gland_left": "adrenal_gland_left",
     "adrenal_gland_right": "adrenal_gland_right",

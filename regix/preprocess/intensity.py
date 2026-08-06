@@ -9,6 +9,14 @@ The rules below come from practice, not aesthetics:
 * PET / NM: huge dynamic range with a long tail -> upper percentiles only.
 * Clipping is applied **before** any normalisation, and the bounds used are kept
   in the metadata for traceability.
+
+Order of operations, and why it is that order: N4 -> clipping -> denoising ->
+normalisation. N4 comes **first**, on the native intensities, because that is where
+a bias field is defined: it is a smooth multiplicative factor on the acquired
+signal, and estimating it after an intensity window has already truncated the
+signal means estimating it on a distorted version of the thing being modelled.
+Percentile bounds are therefore measured on the *corrected* image -- measuring them
+before N4 and applying them after would shift them by whatever the correction did.
 """
 
 from __future__ import annotations
@@ -35,7 +43,8 @@ HU_WINDOWS: dict[str, tuple[float, float]] = {
     "ct_registration": (-450.0, 450.0),  # CT bounds used in the anatomix paper
 }
 
-#: Suggested default preparation per modality.
+#: Suggested default preparation per modality. Every entry states ``percentile_clip``
+#: explicitly, so that resolving ``"auto"`` can never yield ``"auto"`` again.
 DEFAULT_PREP_BY_MODALITY: dict[str, dict] = {
     "CT": {"window": "ct_registration", "percentile_clip": None, "normalize": "minmax"},
     "CBCT": {"window": "ct_registration", "percentile_clip": None, "normalize": "minmax"},
@@ -45,14 +54,72 @@ DEFAULT_PREP_BY_MODALITY: dict[str, dict] = {
     "US": {"percentile_clip": (1.0, 99.0), "normalize": "minmax"},
 }
 
+#: Fallback for a modality that is not in the table (typically UNKNOWN): robust
+#: percentiles, which assume nothing about the intensity scale.
+_FALLBACK_PREP: dict = {"percentile_clip": (0.5, 99.5), "normalize": "minmax"}
+
 
 def default_prep_for(modality: str | None) -> ImagePrep:
     """Sensible preparation for a given modality."""
-    return ImagePrep(**DEFAULT_PREP_BY_MODALITY.get((modality or "").upper(), {}))
+    return ImagePrep(**DEFAULT_PREP_BY_MODALITY.get((modality or "").upper(), _FALLBACK_PREP))
 
 
-def resolve_clip_bounds(volume: Volume, prep: ImagePrep) -> tuple[float, float] | None:
-    """Effective clipping bounds, in priority order clip > window > percentiles."""
+def resolve_prep(prep: ImagePrep, modality: str | None, side: str = "") -> ImagePrep:
+    """Turn ``percentile_clip="auto"`` into the concrete clipping for this modality.
+
+    Why a sentinel value rather than "the field still holds its default": the two are
+    not the same question, and the difference is what used to make this wrong. The
+    detection was ``percentile_clip == (0.5, 99.5)``, the default itself, so an explicit
+    request for robust percentiles was indistinguishable from silence and got replaced
+    by the HU window. On a CT those must not lead to the same place -- Hounsfield units
+    are quantitative, so silence has to become a fixed window, while an explicit pair is
+    exactly what a CBCT with an offset HU scale needs.
+
+    Pydantic's ``model_fields_set`` looks like the answer and is not: ``with_overrides``
+    round-trips the configuration through ``model_dump`` / ``model_validate`` (the CLI,
+    the API and the test helpers all go through it), which marks every field as set. An
+    explicit ``"auto"`` survives that round-trip, survives ``to_yaml``, and reads
+    correctly in ``config_effective.yaml``.
+
+    Idempotent: the returned preparation no longer holds the sentinel.
+    """
+    if prep.percentile_clip != "auto":
+        return prep
+    if prep.clip is not None or prep.window is not None:
+        # An explicit window or explicit bounds win over percentiles anyway
+        # (see resolve_clip_bounds): just discharge the sentinel.
+        return prep.model_copy(update={"percentile_clip": None})
+
+    suggested = default_prep_for(modality)
+    resolved = prep.model_copy(
+        update={"window": suggested.window, "percentile_clip": suggested.percentile_clip}
+    )
+    log.debug(
+        "%s: clipping left to auto, applying the %s default -> %s",
+        side or "volume",
+        (modality or "unknown").upper(),
+        resolved.window or f"percentiles {resolved.percentile_clip}",
+    )
+    return resolved
+
+
+def resolve_clip_bounds(
+    volume: Volume, prep: ImagePrep, source: sitk.Image | None = None
+) -> tuple[float, float] | None:
+    """Effective clipping bounds, in priority order clip > window > percentiles.
+
+    ``source`` is the image the percentiles are measured on, defaulting to
+    ``volume.image``. ``apply_intensity_prep`` passes the N4-corrected image: bias
+    correction changes the intensity distribution, so percentiles taken before it and
+    applied after it are not the percentiles of the data being clipped.
+    """
+    if prep.percentile_clip == "auto":
+        # Reaching here means resolve_prep() was skipped; the modality is needed to
+        # decide, and guessing it silently is how the CT window went missing before.
+        raise ValueError(
+            "percentile_clip is still 'auto': call resolve_prep(prep, modality) before "
+            "applying an intensity preparation"
+        )
     if prep.clip is not None:
         return float(prep.clip[0]), float(prep.clip[1])
     if prep.window is not None:
@@ -67,7 +134,8 @@ def resolve_clip_bounds(volume: Volume, prep: ImagePrep) -> tuple[float, float] 
             )
         return HU_WINDOWS[key]
     if prep.percentile_clip is not None:
-        arr = volume.array(np.float32)
+        measured = volume.image if source is None else source
+        arr = sitk.GetArrayFromImage(sitk.Cast(measured, sitk.sitkFloat32))
         finite = arr[np.isfinite(arr)]
         if finite.size == 0:
             return None
@@ -79,7 +147,10 @@ def resolve_clip_bounds(volume: Volume, prep: ImagePrep) -> tuple[float, float] 
 
 
 def apply_intensity_prep(volume: Volume, prep: ImagePrep) -> Volume:
-    """Apply clipping -> N4 -> smoothing -> normalisation. Returns a new ``Volume``."""
+    """Apply N4 -> clipping -> smoothing -> normalisation. Returns a new ``Volume``.
+
+    See the module docstring for why N4 comes first.
+    """
     image = sitk.Cast(volume.image, sitk.sitkFloat32)
     applied: dict[str, object] = {}
 
@@ -99,14 +170,17 @@ def apply_intensity_prep(volume: Volume, prep: ImagePrep) -> Volume:
         image = fixed
         applied["nonfinite_voxels"] = n_bad
 
-    bounds = resolve_clip_bounds(volume, prep)
-    if bounds is not None:
-        image = sitk.Clamp(image, sitk.sitkFloat32, bounds[0], bounds[1])
-        applied["clip"] = [round(bounds[0], 4), round(bounds[1], 4)]
-
+    # N4 first, on the native intensities: a bias field is defined on the acquired
+    # signal, not on a windowed version of it.
     if prep.n4_bias_correction:
         image = n4_bias_correction(image)
         applied["n4"] = True
+
+    # ... and the percentiles are therefore measured on the corrected image.
+    bounds = resolve_clip_bounds(volume, prep, source=image)
+    if bounds is not None:
+        image = sitk.Clamp(image, sitk.sitkFloat32, bounds[0], bounds[1])
+        applied["clip"] = [round(bounds[0], 4), round(bounds[1], 4)]
 
     if prep.denoise_sigma_mm:
         image = sitk.SmoothingRecursiveGaussian(image, float(prep.denoise_sigma_mm))
