@@ -9,7 +9,7 @@ description = "Multimodal / multi-organ medical image registration (elastix + an
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Regix contributors" }]
+authors = [{ name = "Thibault Escobar" }]
 keywords = ["registration", "elastix", "anatomix", "medical-imaging", "dicom", "multimodal"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -60,6 +60,11 @@ totalsegmentator = ["TotalSegmentator>=2.2"]
 api = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6"]
 all = ["regix[features,organs,api,dev]"]
+
+[project.urls]
+Homepage = "https://github.com/Thibescobar/regix"
+Repository = "https://github.com/Thibescobar/regix"
+Issues = "https://github.com/Thibescobar/regix/issues"
 
 [project.scripts]
 regix = "regix.cli:main"

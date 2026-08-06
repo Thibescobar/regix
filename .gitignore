@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
-# DONNEES PATIENT ET SORTIES : NE JAMAIS COMMITER
-# Une seule coupe DICOM oubliee dans un depot public est une violation de
-# donnees de sante. Ces regles sont volontairement large.
+# PATIENT DATA AND RUN OUTPUTS: NEVER COMMIT
+# A single DICOM slice left in a public repository is a health-data breach.
+# These rules are deliberately broad.
 # ---------------------------------------------------------------------------
 *.dcm
 *.DCM
@@ -17,7 +17,7 @@
 *.h5
 *.tfm
 
-# Repertoires de sortie et de donnees
+# Output and data directories
 e2e_out/
 regix_out*/
 regix_batch*/
@@ -34,14 +34,14 @@ Moving/
 **/elastix/
 **/transformix/
 
-# Rapports et journaux d'execution (peuvent contenir des coupes patient)
+# Reports and run logs (may contain patient slices)
 report.html
 run_manifest.json
 regix.log
 *.log
 summary.csv
 
-# Poids de modeles : jamais redistribues (licences propres)
+# Model weights: never redistributed (they carry their own licences)
 model-weights/
 *.pth
 *.pt
@@ -67,10 +67,11 @@ htmlcov/
 coverage.xml
 
 # ---------------------------------------------------------------------------
-# Outils et OS
+# Tooling and OS
 # ---------------------------------------------------------------------------
 .vscode/
 .idea/
+.claude/
 .DS_Store
 Thumbs.db
 desktop.ini
