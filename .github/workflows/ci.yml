@@ -76,11 +76,47 @@ jobs:
         # a voxel. Slower (~2-4 min), so run after the others.
         run: pytest tests/test_pipeline.py -q --durations=10
 
+      - name: Contract and documentation tests
+        # The safety net the correction waves lean on: the golden transform, what a run
+        # leaves on disk, and the claims the README makes about itself. Several tests
+        # here are strict xfails naming an audit finding -- an xfail that starts passing
+        # fails the build, which is how the marker gets removed together with the fix.
+        #
+        # The golden reference is machine-specific (elastix determinism is a property of
+        # the build), so on a runner it skips rather than failing. What still runs
+        # everywhere: the artefact inventory, strict-JSON serialisation, the PHI canary
+        # and the whole documentation file.
+        run: pytest tests/test_contract.py tests/test_documentation.py -q --durations=10
+
       - name: Coverage gate
         if: matrix.python == '3.12'
         # The threshold sits just below the figure on the README badge, so the badge
         # cannot silently drift: a drop in coverage turns CI red.
         run: pytest -q --cov=regix --cov-report=term-missing:skip-covered --cov-fail-under=75
+
+  api:
+    name: HTTP service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Regix with the api extra
+        # The only job that installs an optional extra. Two things are being checked
+        # here, not one: that `regix[api]` still resolves -- no other job would notice
+        # if it stopped -- and that the service behaves. Before this job existed,
+        # regix/api.py was never even imported in CI, so a syntax error in it would
+        # have reached main.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[api,dev]" httpx
+
+      - name: Service tests
+        run: pytest tests/test_api.py -q --durations=10
 
   cli:
     name: CLI smoke test
