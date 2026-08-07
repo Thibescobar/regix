@@ -140,11 +140,19 @@ def test_the_final_transform_matches_the_golden_reference(tmp_path, reference_pa
         pytest.skip(f"no golden reference; create one with REGIX_UPDATE_GOLDEN=1 ({GOLDEN})")
 
     recorded = json.loads(GOLDEN.read_text(encoding="utf-8"))
-    if recorded["engine"] != _engine_version():
+    # Both the engine *and* the platform have to match. Two machines can carry the same
+    # ITK version and still differ: floating-point contraction, BLAS build and thread
+    # count all vary, and elastix samples in parallel. Comparing across them at 1e-6 mm
+    # would fail for reasons that have nothing to do with the code under test -- which
+    # is exactly what would greet someone resuming this work on another machine.
+    captured = (recorded["engine"], recorded.get("platform"))
+    current = (_engine_version(), sys.platform)
+    if captured != current:
         pytest.skip(
-            f"golden reference captured with {recorded['engine']}, running {_engine_version()}: "
-            "elastix determinism is a property of the build, so this comparison would be "
-            "meaningless. Regenerate with REGIX_UPDATE_GOLDEN=1 if the new engine is the reference."
+            f"golden reference captured on {captured}, running on {current}: elastix "
+            "determinism is a property of the build, so this comparison would be "
+            "meaningless. Capture a reference for this machine with REGIX_UPDATE_GOLDEN=1 "
+            "on an unmodified checkout, before changing any behaviour."
         )
 
     # Compare the probes themselves first: if `_probe_points` or the phantom geometry
