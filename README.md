@@ -5,8 +5,8 @@
 ![CI](https://github.com/Thibescobar/regix/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green)
-![Tests](https://img.shields.io/badge/tests-122%20passed-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-78%25-yellowgreen)
+![Tests](https://img.shields.io/badge/tests-216%20collected-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-82%25-yellowgreen)
 ![Linting](https://img.shields.io/badge/linting-ruff-purple)
 
 This project provides a pipeline for registering medical image volumes across
@@ -33,12 +33,21 @@ modalities and around specific organs. It enables:
 > outputs without review by a qualified operator and validation on the data of the
 > deploying site. See [LICENSE](LICENSE).
 
+### Choose your route
+
+- **Operator / deployment:** [Operations guide](docs/OPERATIONS.md)
+- **Developer:** [Architecture](docs/ARCHITECTURE.md) and [Contributing](CONTRIBUTING.md)
+- **Maintainer / auditor:** [Audit closure](AUDIT_CLOSURE.md),
+  [verification record](VERIFICATION.md), and [changelog](CHANGELOG.md)
+
 ## What a run produces
 
 A run delivers three things: the **registered volume** on the original fixed grid and
-in its original Hounsfield units, the **transform** in four formats (including a DICOM
-Spatial Registration Object a planning system can consume), and the evidence needed to
-judge them — a `run_manifest.json` plus a self-contained `report.html`.
+in its original Hounsfield units, the **transform chain**, and the evidence needed to
+judge them — a `run_manifest.json` plus a self-contained `report.html`. Linear runs
+systematically export an ITK `.tfm`, an Insight `.itk.txt`, and a 4x4 text matrix. A
+DICOM Spatial Registration Object is additionally exported when both inputs are DICOM
+series; deformable chains retain their replayable elastix files and displacement field.
 
 The report is what a reviewer opens: verdict at the top, then the two reading modes.
 Fixed image in grey, moving in hot, before and after registration:
@@ -82,9 +91,11 @@ commitments:
 
 ```bash
 pip install -e .                      # core: CPU, no GPU, no neural network
-pip install -e ".[features]"          # + anatomix (torch, monai, HuggingFace weights)
+pip install -e ".[features]"          # + torch/monai feature tooling
+pip install "anatomix @ git+https://github.com/neel-dey/anatomix.git"  # optional backend
 pip install -e ".[totalsegmentator]"  # + automatic organ segmentation
 pip install -e ".[api]"               # + HTTP service
+pip install -e ".[report]"            # + QC figures and image sidecars
 regix doctor                          # what is installed, what is missing, and the impact
 ```
 
@@ -119,6 +130,9 @@ regix batch pairs.csv -o batch/ -p ct_ct_liver_followup
 # Propagate contours with an already computed transform
 regix apply out/transform/final_transform.tfm contours_mr.nii.gz \
     --reference ct.nii.gz -o contours_on_ct.nii.gz --label
+
+# Re-evaluate stored metrics against a revised QC policy; no registration is rerun
+regix qc out/ --set qc.gates.max_tre_mm=4.0
 ```
 
 Any configuration option is overridable without editing YAML:
@@ -138,12 +152,35 @@ cfg = load_preset("ct_mr_abdomen").with_overrides(
     organs={"targets": ["liver"], "backend": "totalsegmentator", "roi_crop": True},
     qc={"gates": {"min_dice": {"liver": 0.9}, "max_tre_mm": 5.0}},
 )
-result = RegistrationPipeline(cfg).run("ct/", "mr/", "out/")
+pipeline = RegistrationPipeline(cfg)
+
+# Standalone delivery: image, transforms, report and manifest are persisted.
+result = pipeline.run("ct/", "mr/", "out/")
 
 print(result.status)                              # PASS | WARN | FAIL
 print(result.metrics["organ_overlap"]["liver"])   # {'dice': 0.96, 'hd95_mm': 2.0, ...}
 transform = result.applied_transform.as_sitk_transform()   # a usable sitk.Transform
 ```
+
+The same algorithm can be embedded without leaving files behind:
+
+```python
+# Full in-memory result, including registered image and configured QC metrics.
+result = pipeline.compute("ct/", "mr/")
+
+# Lowest-cost integration when the parent application only needs the transform.
+transform_only = pipeline.compute(
+    "ct/", "mr/", registered_image=False, qc=False
+)
+transform = transform_only.applied_transform.as_sitk_transform()
+```
+
+Elastix still chains its stages through a private temporary workspace. `compute()`
+removes that workspace on success or failure and detaches the returned transform from
+it, so the caller receives no stale paths and can keep applying the transform. It
+creates no persistent Regix run artifact; optional ML or segmentation backends can still
+populate their own model caches. If traceability, replay, DICOM export or human review
+is required, use `run()`.
 
 ### HTTP service
 
@@ -152,33 +189,41 @@ therefore exchanges **paths**, and work is asynchronous because a registration t
 seconds to minutes.
 
 ```bash
-uvicorn regix.api:app --port 8000
+export REGIX_API_ALLOWED_ROOTS=/nas/studies:/nas/results
+export REGIX_API_TOKEN='replace-with-a-site-managed-secret'
+uvicorn regix.api:app --host 127.0.0.1 --port 8000
 ```
 
 ```bash
-curl -X POST localhost:8000/register -H 'Content-Type: application/json' -d '{
+curl -X POST localhost:8000/register \
+  -H 'Authorization: Bearer replace-with-a-site-managed-secret' \
+  -H 'Content-Type: application/json' -d '{
   "fixed": "/nas/studies/pat001/CT_day0", "moving": "/nas/studies/pat001/CT_day90",
   "output_dir": "/nas/results/pat001", "preset": "ct_ct_liver_followup",
   "organs": ["liver"]
 }'
 # -> {"job_id": "a3f9c1", "state": "queued"}
 
-curl localhost:8000/jobs/a3f9c1
+curl localhost:8000/jobs/a3f9c1 \
+  -H 'Authorization: Bearer replace-with-a-site-managed-secret'
 # -> {"state": "done", "qc_status": "PASS", "seconds": 43.1, "metrics": {...},
 #     "outputs": {"registered": "...", "report": "..."}}
 ```
 
-Plus `GET /health` (poll before submitting) and `GET /presets`. Assumed limitations:
-single process, no job persistence, **no authentication** — put it behind a queue and
-an authenticated proxy for real use, and never expose it directly on a clinical
-network.
+Plus `GET /health` (poll before submitting), `GET /presets`, and paginated `GET /jobs`.
+All resolved input and output paths must remain below `REGIX_API_ALLOWED_ROOTS`; symlink
+escapes are refused. Setting `REGIX_API_TOKEN` requires a matching bearer or
+`X-Regix-Token` header. The service remains deliberately single-process and in-memory:
+use a durable queue, TLS, site identity, and audit logging for a production deployment,
+and never expose it directly on a clinical network. See
+[Operations](docs/OPERATIONS.md#http-service).
 
 ## Presets
 
 | Preset | Pair | Stages | What it encodes |
 |---|---|---|---|
 | `base` | any | rigid + affine | CPU default, automatic body mask |
-| `ct_mr_abdomen` | MR to CT | rigid + affine + B-spline 20 mm | Features, multi-start, N4 on the MR |
+| `ct_mr_abdomen` | MR to CT | rigid + affine + B-spline 20 mm | Features, multi-start; N4 intentionally disabled |
 | `ct_ct_liver_followup` | CT to CT | rigid + affine + B-spline 20 mm | NCC, liver ROI, Dice >= 0.92 required |
 | `mr_ct_prostate` | MR to CT | rigid + affine + B-spline 12 mm | Pelvic mask, TRE <= 3 mm |
 | `ct_ct_lung_4d` | CT to CT | rigid + B-spline 15 mm | Lung mask, low bending penalty (large motion) |
@@ -268,7 +313,7 @@ flowchart TD
     rest["Restitution on the original fixed grid<br/>with native moving intensities"]
 
     vol["Registered volume"]
-    tfm["Transform<br/>ITK, Slicer, DICOM REG"]
+    tfm["Transform<br/>ITK, Slicer; DICOM REG when eligible"]
     qc["QC report, gates, manifest"]
     review["Physician / physicist review"]
 
@@ -297,8 +342,8 @@ acquisitions.
 **Outputs.** Besides the NIfTI:
 
 - the complete chain of elastix parameter files, replayable as-is with the elastix binary;
-- the transform as an ITK `.tfm`, as an **Insight Transform File `.txt`** (loads directly in [3D Slicer](https://www.slicer.org/)), and as a 4x4 matrix `p_fixed = M . p_moving`;
-- a **DICOM Spatial Registration Object** (`Modality REG`, SOP Class `1.2.840.10008.5.1.4.1.1.66.1`) — what treatment planning systems and fusion workstations consume;
+- the transform as an ITK `.tfm`, as an **Insight Transform File `.itk.txt`** (loads directly in [3D Slicer](https://www.slicer.org/)), and, for a linear chain, as a 4x4 matrix `p_fixed = M . p_moving`;
+- when both sources are DICOM and the result is linear, a **DICOM Spatial Registration Object** (`Modality REG`, SOP Class `1.2.840.10008.5.1.4.1.1.66.1`) — what treatment planning systems and fusion workstations consume;
 - optionally a derived DICOM series (`DERIVED\SECONDARY\REGISTERED`, new UIDs, Frame of Reference of the fixed image).
 
 A linear chain is **flattened to a single affine** before writing the `.txt`
@@ -390,8 +435,12 @@ numerically influences the result, effective configuration, per-step duration, m
 warnings. A self-contained `report.html` (images as base64) that can be emailed and
 opened without a network.
 
-**Privacy.** No patient identifier in clear text in logs or reports: pseudonymisation
-by salted hash (`REGIX_PSEUDONYM_SALT`), verified by test.
+**Privacy.** No patient identifier in clear text in logs or reports. Pseudonyms use
+HMAC-SHA256. Without `REGIX_PSEUDONYM_SALT`, every process receives a random ephemeral
+key: this is safe against enumeration but intentionally not stable between runs. For
+stable site pseudonyms, configure at least 16 unpredictable characters through a
+secret manager. Regix records only whether a key is configured and its non-secret
+fingerprint; it never prints the key. This is pseudonymisation, not anonymisation.
 
 **Nomenclature is never guessed.** A label map with no dictionary yields
 `label_1, label_2...` plus a warning — not a fabricated `liver`. Regix reads a sidecar
@@ -446,25 +495,50 @@ going back through transformix.
 ## Testing
 
 ```bash
-pytest                          # 90 tests, ~2 min, no GPU and no patient data required
-pytest tests/test_units.py      # 37: config, elastix parameters, geometry, transforms, metrics
-pytest tests/test_pipeline.py   # 11: end-to-end on a phantom, against a ground truth
-pytest tests/test_cli.py        # 16: every command and option, through the real Typer app
-pytest tests/test_dicom_io.py   #  7: synthetic DICOM series, derived series, DICOM REG
-pytest tests/test_registration_internals.py   # 19: initialization strategies, transform application
+pytest                          # 216 tests, ~2 min, no GPU and no patient data required
+pytest tests/test_units.py      # 67: config, elastix parameters, geometry, transforms, metrics
+pytest tests/test_pipeline.py   # 19: end-to-end, embedded lifecycle and geometry phantoms
+pytest tests/test_cli.py        # 26: every command and option, through the real Typer app
+pytest tests/test_dicom_io.py   # 10: synthetic DICOM series, derived series, DICOM REG
+pytest tests/test_registration_internals.py   # 20: initialization strategies, transform application
+pytest tests/test_audit_regressions.py         # 36: security, contracts, geometry, cache, optional imports
 ruff check regix tests          # lint
-pytest --cov=regix --cov-report=term-missing  # 78 % coverage
+pytest --cov=regix --cov-report=term-missing  # 82 % coverage
 ```
 
 The coverage figure on the badge is enforced, not decorative: CI runs
 `--cov-fail-under` just below it, so the badge cannot silently drift. The uncovered
-quarter is concentrated in the paths that need hardware or third-party weights this
-project does not redistribute — anatomix inference, the GPU deformable stage, the
-TotalSegmentator call, and the HTTP service. Those are documented as unexercised
-rather than quietly excluded from the measurement.
+remainder is concentrated in the paths that need hardware or third-party weights this
+project does not redistribute — anatomix inference, the GPU deformable stage, and the
+TotalSegmentator call. The HTTP service itself has request, path-confinement,
+authentication, error-redaction, pagination, and lifecycle coverage.
 
-CI runs the five suites on Python 3.10/3.11/3.12, plus a CLI smoke test that performs a
-full registration on a generated phantom and uploads the QC report as an artifact.
+### Embedded execution benchmark
+
+Run the three execution modes in isolated processes so native peak memory and temporary
+I/O remain comparable:
+
+```bash
+python benchmarks/benchmark_execution.py --repeats 3
+```
+
+Median measured on the bundled synthetic rigid case in the audited CPU environment:
+
+| Mode | Time | Peak workspace I/O | Persistent I/O |
+|---|---:|---:|---:|
+| `run()` standalone | 7.34 s | 391 kB / 17 files | 391 kB / 17 files |
+| `compute()` full | 7.15 s | 28 kB / 5 files | 0 |
+| `compute(..., registered_image=False, qc=False)` | 7.09 s | 28 kB / 5 files | 0 |
+
+Peak resident memory stays essentially unchanged at 1.18–1.19 GB because the ITK and
+elastix libraries dominate it. These figures compare lifecycle overhead, not clinical
+accuracy or every acquisition profile; rerun the benchmark on representative target
+hardware and volumes.
+
+CI runs the core suite groups on Python 3.10/3.11/3.12 and the entire collection with
+coverage on Python 3.12. Separate jobs exercise the API extra, every optional-extra
+resolution, a CLI registration, the locked numerical environment, and installation from
+the built wheel; the CLI job uploads its QC report as an artifact.
 
 No patient data enters CI: it registers a synthetic phantom, and `.gitignore` keeps
 volumes, DICOM series and run outputs out of the repository.
@@ -503,18 +577,20 @@ modalities, and `regix presets NAME` shows what was resolved.
 - The anatomix and TotalSegmentator code paths are written against the documented
   APIs of those projects but have not been executed in this environment (no GPU, weights
   not downloaded). Verify with `regix doctor` and a first run on your own data.
-- The automatic body mask disagrees with itself across resolutions: on the reference
-  run it measures 26 365 mL on the full-resolution moving volume against 19 114 mL at
-  the 2 mm working resolution, while the fixed volume agrees to 1 %. Both passes now
-  take the same −300 HU threshold, so the cause is resolution-dependent morphology
-  (the closing radius in voxels, and which component survives `keep_largest`), not the
-  intensity scale. The criterion mask and the QC mask therefore need not be the same
-  object — untangled on a dedicated branch.
+- The automatic body mask is computed once from native-resolution intensities with an
+  explicit −300 HU threshold. Binary morphology runs on a 4 mm grid with physical
+  radii, then the result is resampled by nearest neighbour. Its undilated role is used
+  for initialization; a separately typed criterion role may be dilated for elastix.
 - Only one automatic segmentation backend is supported, on purpose: in Regix the masks
   are priors (initialisation, dilated criterion mask, ROI box, Dice), never deliverables,
   so a second segmenter would add nomenclatures and failure modes without buying
   registration accuracy.
-- Coverage stands at 78 %; the remaining gap is the hardware-dependent code above.
+- Coverage stands at 82 %; the remaining gap is concentrated in the hardware-dependent
+  code above and optional backend failure paths.
+- Structural DICOM tests cover required references and Type 2 attributes. Conformance
+  with an installed `dciodvfy`, PACS interoperability, large-volume capacity, and
+  clinical accuracy remain site-level validation obligations; see
+  [Verification](VERIFICATION.md).
 
 ## License
 
