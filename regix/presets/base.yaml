@@ -24,7 +24,6 @@ features:
 
 organs:
   backend: none
-  mask_dilate_mm: 8.0
 
 init:
   mode: geometry

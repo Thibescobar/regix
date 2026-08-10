@@ -27,9 +27,10 @@ Two behaviours were established experimentally rather than assumed:
 from __future__ import annotations
 
 import re
+import shlex
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -121,11 +122,18 @@ class RegistrationOutcome:
 class ElastixEngine:
     """Thin wrapper around ``itk.ElastixRegistrationMethod``."""
 
-    def __init__(self, work_dir: str | Path, keep_intermediate: bool = False, verbose: bool = False):
+    def __init__(
+        self,
+        work_dir: str | Path,
+        keep_intermediate: bool = False,
+        verbose: bool = False,
+        write_inputs: bool = True,
+    ):
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.keep_intermediate = keep_intermediate
         self.verbose = verbose
+        self.write_inputs = write_inputs
         require_itk()  # fail early, with an actionable message
 
     # ------------------------------------------------------------------ #
@@ -162,19 +170,24 @@ class ElastixEngine:
             )
             channels_available = bool(fixed_channels) and bool(moving_channels)
             with_features = bool(use_features and channels_available)
-            stage_ctx = ParamContext(
-                dimension=context.dimension,
+            stage_ctx = replace(
+                context,
                 n_channels=context.n_channels if with_features else 1,
-                working_spacing_mm=context.working_spacing_mm,
                 has_mask=fixed_mask is not None,
-                fixed_modality=context.fixed_modality,
-                moving_modality=context.moving_modality,
                 features_available=context.features_available and channels_available,
-                n_voxels=context.n_voxels,
             )
             pmap = build_parameter_map(stage, stage_ctx)
-            write_parameter_file(pmap, stage_dir / "parameters.txt")
             n_images = required_image_count(pmap)
+            replay = None
+            if self.write_inputs:
+                replay = itk_cache.write_replay_bundle(
+                    stage_dir=stage_dir,
+                    with_features=with_features,
+                    n_images=n_images,
+                    use_masks=stage.use_masks,
+                    initial_transform_file=current_t0,
+                )
+            write_parameter_file(pmap, stage_dir / "parameters.txt", replay_command=replay)
             description = describe_stage(stage, stage_ctx, pmap)
             log.info(
                 "stage %d/%d: %s | %s | %d channel(s) -> %d elastix image(s) | %d resolutions | masked=%s",
@@ -212,6 +225,11 @@ class ElastixEngine:
                     if matrix is not None:
                         linear = decompose_affine(matrix)
 
+            if not self.keep_intermediate:
+                for trace in stage_dir.glob("IterationInfo.*"):
+                    trace.unlink(missing_ok=True)
+                log_file.unlink(missing_ok=True)
+
             outcome.stages.append(
                 StageResult(
                     name=description["stage"],
@@ -239,7 +257,7 @@ class ElastixEngine:
 
         # --- full final transform (chain included) -------------------------- #
         if last_registration is not None:
-            outcome.final_transform = self._extract_final_transform(last_registration)
+            outcome.final_transform = self._extract_final_transform(last_registration, fixed.image)
 
         # --- global linear transform, for export and analysis ---------------- #
         # The order follows the elastix HowToCombineTransforms=Compose semantics:
@@ -258,7 +276,11 @@ class ElastixEngine:
         return outcome
 
     # ------------------------------------------------------------------ #
-    def _extract_final_transform(self, registration) -> sitk.Transform | None:
+    def _extract_final_transform(
+        self,
+        registration,
+        reference: sitk.Image | None = None,
+    ) -> sitk.Transform | None:
         """Retrieve the combination transform and convert it to a ``sitk.Transform``."""
         _, _, method = image_types()
         try:
@@ -268,7 +290,11 @@ class ElastixEngine:
             log.warning("ITK combination transform unavailable (%s): falling back to transformix", exc)
             return None
         try:
-            return itk_transform_to_sitk(itk_transform, work_dir=self.work_dir / "final")
+            return itk_transform_to_sitk(
+                itk_transform,
+                work_dir=self.work_dir / "final",
+                reference=reference,
+            )
         except Exception as exc:
             log.warning("conversion to SimpleITK failed (%s): falling back to transformix", exc)
             return None
@@ -344,6 +370,12 @@ class _ItkInputs:
         fixed_channels: Sequence[sitk.Image] | None,
         moving_channels: Sequence[sitk.Image] | None,
     ):
+        self.fixed_intensity_sitk = fixed.image
+        self.moving_intensity_sitk = moving.image
+        self.fixed_mask_sitk = fixed_mask
+        self.moving_mask_sitk = moving_mask
+        self.fixed_features_sitk = list(fixed_channels or [])
+        self.moving_features_sitk = list(moving_channels or [])
         self.fixed_intensity = sitk_to_itk(fixed.image)
         self.moving_intensity = sitk_to_itk(moving.image)
         self.fixed_mask = None
@@ -377,6 +409,56 @@ class _ItkInputs:
         elif n_images < len(fixed):  # pragma: no cover - defensive
             fixed, moving = fixed[:n_images], moving[:n_images]
         return fixed, moving
+
+    def write_replay_bundle(
+        self,
+        stage_dir: Path,
+        with_features: bool,
+        n_images: int,
+        use_masks: bool,
+        initial_transform_file: Path | None,
+    ) -> str:
+        """Persist exactly what this stage receives and return its executable command."""
+        input_dir = stage_dir / "inputs"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        fixed = self.fixed_features_sitk if with_features else [self.fixed_intensity_sitk]
+        moving = self.moving_features_sitk if with_features else [self.moving_intensity_sitk]
+        if n_images > len(fixed):
+            fixed = fixed + [fixed[0]] * (n_images - len(fixed))
+            moving = moving + [moving[0]] * (n_images - len(moving))
+        else:
+            fixed, moving = fixed[:n_images], moving[:n_images]
+
+        fixed_paths: list[Path] = []
+        moving_paths: list[Path] = []
+        for index, (fixed_image, moving_image) in enumerate(zip(fixed, moving, strict=True)):
+            fixed_path = input_dir / f"fixed_{index:02d}.nii.gz"
+            moving_path = input_dir / f"moving_{index:02d}.nii.gz"
+            if not fixed_path.exists():
+                sitk.WriteImage(sitk.Cast(fixed_image, sitk.sitkFloat32), str(fixed_path), True)
+            if not moving_path.exists():
+                sitk.WriteImage(sitk.Cast(moving_image, sitk.sitkFloat32), str(moving_path), True)
+            fixed_paths.append(fixed_path.relative_to(stage_dir))
+            moving_paths.append(moving_path.relative_to(stage_dir))
+
+        command = ["elastix"]
+        if n_images == 1:
+            command += ["-f", str(fixed_paths[0]), "-m", str(moving_paths[0])]
+        else:
+            for index, (fixed_path, moving_path) in enumerate(zip(fixed_paths, moving_paths, strict=True)):
+                command += [f"-f{index}", str(fixed_path), f"-m{index}", str(moving_path)]
+        if use_masks and self.fixed_mask_sitk is not None:
+            fixed_mask = input_dir / "fixed_mask.nii.gz"
+            sitk.WriteImage(sitk.Cast(self.fixed_mask_sitk, sitk.sitkUInt8), str(fixed_mask), True)
+            command += ["-fMask", str(fixed_mask.relative_to(stage_dir))]
+        if use_masks and self.moving_mask_sitk is not None:
+            moving_mask = input_dir / "moving_mask.nii.gz"
+            sitk.WriteImage(sitk.Cast(self.moving_mask_sitk, sitk.sitkUInt8), str(moving_mask), True)
+            command += ["-mMask", str(moving_mask.relative_to(stage_dir))]
+        if initial_transform_file is not None:
+            command += ["-t0", str(Path(initial_transform_file).resolve())]
+        command += ["-out", ".", "-p", "parameters.txt"]
+        return shlex.join(command)
 
 
 def _check_mask(mask: sitk.Image, side: str, min_voxels: int = 512) -> None:

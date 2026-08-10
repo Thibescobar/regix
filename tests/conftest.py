@@ -26,6 +26,34 @@ def _ellipsoid(shape, centre, radii) -> np.ndarray:
     ) <= 1.0
 
 
+def oblique_direction(rotation_deg: tuple[float, float, float] = (15.0, 0.0, 0.0)) -> tuple[float, ...]:
+    """Direction cosines of a tilted grid, as the 9 row-major values ITK expects.
+
+    Built through ``sitk.Euler3DTransform`` rather than by hand so that the rotation
+    convention is the same one the rest of Regix uses -- a phantom whose obliquity was
+    defined by a different convention would test the wrong thing.
+    """
+    rotation = sitk.Euler3DTransform()
+    rotation.SetComputeZYX(False)
+    rotation.SetRotation(*[float(np.radians(a)) for a in rotation_deg])
+    return tuple(float(v) for v in rotation.GetMatrix())
+
+
+#: Grid geometries the suite should exercise, not just the comfortable one.
+#:
+#: Regix claims that direction cosines are honoured everywhere and that getting them
+#: wrong is "fatal on oblique acquisitions" (README), yet every phantom until now used an
+#: identity direction and a mild 1.25 anisotropy -- so the claim was never exercised
+#: end to end. Parametrising a test over this mapping is what turns the claim into a
+#: measurement. ``identity`` reproduces the historical phantom exactly, so a test that
+#: only uses it keeps its previous behaviour.
+GEOMETRIES: dict[str, dict] = {
+    "identity": {},
+    "oblique": {"direction": oblique_direction((15.0, 8.0, 0.0))},
+    "thick_slices": {"spacing": (1.0, 1.0, 5.0)},
+}
+
+
 def make_phantom(
     modality: str = "CT",
     shape: tuple[int, int, int] = (64, 80, 80),
@@ -33,12 +61,20 @@ def make_phantom(
     origin: tuple[float, float, float] = (-40.0, -60.0, 30.0),
     noise: float = 0.0,
     seed: int = 0,
+    direction: tuple[float, ...] | None = None,
 ) -> tuple[sitk.Image, sitk.Image]:
     """Return (image, label map) on the same grid.
 
     ``spacing`` follows the ITK convention (x, y, z); ``shape`` follows the numpy
     convention (z, y, x). The organ contrast is inverted for 'MR' to simulate a
     realistic multimodal pair: same anatomy, intensities with no affine relation.
+
+    ``direction`` is the 9 row-major direction cosines; ``None`` leaves the identity,
+    which is what every caller got before the parameter existed. Pass
+    ``oblique_direction(...)`` -- or spread ``GEOMETRIES[name]`` -- to build a tilted
+    grid: the anatomy is unchanged, only the mapping from voxel indices to patient
+    coordinates is, which is exactly the part a registration pipeline gets wrong
+    silently.
     """
     rng = np.random.default_rng(seed)
     body = _ellipsoid(
@@ -87,6 +123,8 @@ def make_phantom(
     for img in (image, labelmap):
         img.SetSpacing(spacing)
         img.SetOrigin(origin)
+        if direction is not None:
+            img.SetDirection([float(v) for v in direction])
     return image, labelmap
 
 

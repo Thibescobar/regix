@@ -30,6 +30,9 @@ import numpy as np
 import SimpleITK as sitk
 
 from regix.logging_utils import get_logger
+from regix.preprocess.geometry import (
+    displacement_field_from_transform as displacement_field_from_transform,
+)
 
 log = get_logger("registration.convexadam")
 
@@ -181,14 +184,3 @@ def _normalized_to_world_field(disp_norm: np.ndarray, reference: sitk.Image) -> 
     field.SetOrigin(reference.GetOrigin())
     field.SetDirection(reference.GetDirection())
     return field
-
-
-def displacement_field_from_transform(transform: sitk.Transform, reference: sitk.Image) -> sitk.Image:
-    """Materialise any transform as a displacement field on ``reference``.
-
-    Used for QC (Jacobian, magnitude) even when the transform is purely linear.
-    """
-    f = sitk.TransformToDisplacementFieldFilter()
-    f.SetReferenceImage(reference)
-    f.SetOutputPixelType(sitk.sitkVectorFloat64)
-    return f.Execute(transform)

@@ -18,11 +18,22 @@ import numpy as np
 
 from regix.config import QCGates
 from regix.logging_utils import get_logger
+from regix.qc.schemas import (
+    InitializationReport,
+    JacobianStats,
+    LandmarkReport,
+    LinearAnalysis,
+    OrganOverlapEntry,
+    SimilarityReport,
+    StageSummary,
+    require_known_schema,
+)
 
 log = get_logger("qc.gates")
 
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 _SEVERITY = {PASS: 0, WARN: 1, FAIL: 2}
+_ZERO_IS_OPTIMAL = {"mse", "features_mse", "AdvancedMeanSquares"}
 
 
 @dataclass
@@ -78,16 +89,49 @@ class GateResult:
 
 def evaluate_gates(
     gates: QCGates,
-    similarity: dict[str, Any] | None = None,
-    organ_overlap: dict[str, dict[str, float]] | None = None,
-    jacobian: dict[str, Any] | None = None,
-    linear_analysis: dict[str, Any] | None = None,
-    landmarks: dict[str, Any] | None = None,
+    similarity: SimilarityReport | None = None,
+    organ_overlap: dict[str, OrganOverlapEntry] | None = None,
+    jacobian: JacobianStats | None = None,
+    linear_analysis: LinearAnalysis | None = None,
+    landmarks: LandmarkReport | None = None,
     deformable: bool = False,
-    stages: list[dict[str, Any]] | None = None,
+    displacement: dict[str, Any] | None = None,
+    expected_motion_mm: float | None = None,
+    stages: list[StageSummary] | None = None,
+    initialization: InitializationReport | None = None,
+    displacement_advisory: bool = False,
 ) -> GateResult:
     """Compare the QC measurements against the configured thresholds."""
+    require_known_schema(
+        "similarity",
+        similarity,
+        {"ncc_before", "ncc_after", "ncc_gain", "nmi_before", "nmi_after", "nmi_gain"},
+    )
+    require_known_schema("Jacobian", jacobian, {"available", "folding_fraction"})
+    require_known_schema(
+        "linear analysis",
+        linear_analysis,
+        {"translation_norm_mm", "max_scale_deviation", "determinant"},
+    )
+    require_known_schema("landmark", landmarks, {"tre_mean_mm", "n_landmarks"})
+    for index, stage in enumerate(stages or []):
+        require_known_schema(f"stage {index}", stage, {"stage", "final_metric", "metric"})
+    require_known_schema("initialization", initialization, {"requested", "chosen", "mode"})
     result = GateResult()
+
+    requested = (initialization or {}).get("requested")
+    chosen = (initialization or {}).get("chosen")
+    if requested and requested != "multistart":
+        chosen_mode = chosen.split("+", 1)[0] if chosen else None
+        result.add(
+            Check(
+                "initialization_as_requested",
+                PASS if chosen_mode == requested else WARN,
+                chosen,
+                requested,
+                "" if chosen_mode == requested else "the requested initialization was not the one applied",
+            )
+        )
 
     # --- 1. similarity gain ---------------------------------------------- #
     # NCC for monomodal, NMI for multimodal: comparing CT and MR intensities by
@@ -141,6 +185,7 @@ def evaluate_gates(
     if gates.min_abs_final_metric is not None:
         for stage in stages or []:
             metric = stage.get("final_metric")
+            metric_name = stage.get("metric") or stage.get("metric_elastix")
             label = stage.get("stage", "?")
             name = f"final_metric[{label}]"
             if metric is None or not np.isfinite(metric):
@@ -151,6 +196,16 @@ def evaluate_gates(
                         metric,
                         gates.min_abs_final_metric,
                         "stage criterion unavailable: could not be read back from the elastix log",
+                    )
+                )
+            elif metric_name in _ZERO_IS_OPTIMAL:
+                result.add(
+                    Check(
+                        name,
+                        PASS,
+                        metric,
+                        "0 is optimal",
+                        "mean-squares criterion is interpreted by distance to zero",
                     )
                 )
             elif abs(float(metric)) < gates.min_abs_final_metric:
@@ -277,6 +332,46 @@ def evaluate_gates(
                 )
             )
 
+    if gates.max_displacement_ratio is not None:
+        p95 = (displacement or {}).get("p95_mm")
+        if expected_motion_mm is not None and expected_motion_mm <= 0 and p95 is not None:
+            value = float(p95)
+            status = FAIL if deformable and value > 1.0 else PASS
+            result.add(
+                Check(
+                    "rigid_organ_displacement_mm",
+                    status,
+                    value,
+                    1.0,
+                    ""
+                    if status == PASS
+                    else "a nominally rigid organ profile received a non-trivial deformation",
+                )
+            )
+        elif expected_motion_mm is None or p95 is None:
+            result.add(
+                Check(
+                    "displacement_ratio",
+                    WARN,
+                    None,
+                    gates.max_displacement_ratio,
+                    "displacement plausibility unavailable: no positive organ motion profile or field",
+                )
+            )
+        else:
+            ratio = float(p95) / float(expected_motion_mm)
+            status = (
+                PASS if ratio <= gates.max_displacement_ratio else (WARN if displacement_advisory else FAIL)
+            )
+            result.add(
+                Check(
+                    "displacement_ratio",
+                    status,
+                    round(ratio, 3),
+                    gates.max_displacement_ratio,
+                    "" if status == PASS else "displacement exceeds the organ's expected physiology",
+                )
+            )
     # --- 5. TRE ----------------------------------------------------------- #
     if gates.max_tre_mm is not None:
         if not landmarks:

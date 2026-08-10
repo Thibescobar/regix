@@ -194,17 +194,37 @@ def test_flip_check_doubles_the_candidate_list():
 
 
 def test_unusable_candidate_is_dropped_not_fatal(caplog):
-    """A missing segmentation must degrade to the grid centre, with a warning."""
+    """Multistart may drop one unusable candidate while retaining viable ones."""
     from regix.config import InitConfig, InitMode
     from regix.registration.initialize import build_candidates
 
     fixed_img, _ = make_phantom("CT")
     moving_img, _ = make_phantom("CT")
-    config = InitConfig(mode=InitMode.ORGAN_CENTROID)
+    config = InitConfig(
+        mode=InitMode.MULTISTART,
+        candidates=[InitMode.ORGAN_CENTROID, InitMode.GEOMETRY],
+        multistart_rotations_deg=[(0, 0, 0)],
+    )
 
     candidates = build_candidates(_volume(fixed_img), _volume(moving_img), config)
     assert len(candidates) == 1
-    assert candidates[0].name == "geometry", "must fall back, not crash"
+    assert candidates[0].name == "geometry"
+    assert "discarded" in caplog.text
+
+
+def test_explicit_organ_centroid_failure_is_not_silently_replaced():
+    from regix.config import InitConfig, InitMode
+    from regix.registration.initialize import build_candidates
+
+    fixed_img, _ = make_phantom("CT")
+    moving_img, _ = make_phantom("CT")
+
+    with pytest.raises(ValueError, match="initialization 'organ_centroid' failed"):
+        build_candidates(
+            _volume(fixed_img),
+            _volume(moving_img),
+            InitConfig(mode=InitMode.ORGAN_CENTROID),
+        )
 
 
 def test_initialization_from_a_file(tmp_path):
@@ -249,7 +269,11 @@ def test_sitk_applied_transform_resamples_and_reports():
 
     applied = SitkAppliedTransform(truth, label="ground_truth")
     assert applied.kind == "sitk"
-    assert applied.describe() == {"kind": "sitk", "label": "ground_truth"}
+    assert applied.describe() == {
+        "kind": "sitk",
+        "label": "ground_truth",
+        "capabilities": ["field", "inverse", "points", "sitk"],
+    }
     assert applied.as_sitk_transform() is truth
 
     registered = applied.resample(moving_img, fixed_img)

@@ -173,6 +173,10 @@ class AnatomixExtractor:
             pass
 
         features = unpad(features, pads)
+        # Regix deliberately exposes this for every variant: L2 is the established
+        # project default, while ``none`` reproduces the raw upstream descriptor. Its
+        # numerical impact on the base weights still requires the GPU validation listed
+        # in AUDIT_CLOSURE.md.
         features = voxel_normalize(features, self.config.voxel_normalize)
         return np.ascontiguousarray(features, dtype=np.float32)
 

@@ -3619,12 +3619,17 @@ portent sur des **trous précis**, pas sur la qualité générale — qui est tr
   2.x est établie par la signature de l'API, documentée en amont.
 - **Détails aggravants** :
   - `ds.is_little_endian = True` et `ds.is_implicit_VR = False` (`writers.py:207-208`) sont
-    des attributs **supprimés** de `Dataset` en pydicom 3.0. Les affectations ne lèvent pas
-    (Python crée simplement des attributs d'instance) mais **elles ne font plus rien** :
-    c'est du code mort résiduel de l'API 2.x, qui donne l'illusion de contrôler le
-    transfert syntax alors que celui-ci est déterminé par `file_meta.TransferSyntaxUID` ;
-  - le code mélange donc les deux API : il utilise un mot-clé exclusif à la 3.x **et** des
-    attributs exclusifs à la 2.x.
+    **dépréciés** en pydicom 3.0 et annoncés pour suppression en 4.0.
+    *(Correction apportée pendant la vague 0 : la première rédaction de ce constat les
+    disait « supprimés en 3.0 », ce qui est faux — ils fonctionnent encore. La suite de
+    tests le démontre, elle émet 56 `DeprecationWarning` « 'FileDataset.is_little_endian'
+    will be removed in v4.0 » depuis `tests/test_dicom_io.py`.)*
+    Le fond du constat tient : ce sont des vestiges de l'API 2.x, la syntaxe de transfert
+    étant déterminée par `file_meta.TransferSyntaxUID`, et pydicom avertit désormais
+    lui-même qu'il faut les retirer ;
+  - le code mélange donc les deux API : il utilise un mot-clé **exclusif à la 3.x** et des
+    attributs **hérités de la 2.x, dépréciés en 3.x** — d'où l'incompatibilité dans les
+    deux sens : il ne tourne pas sur 2.x, et il avertit sur 3.x.
 - **Conséquences** : `pip install regix` sur un environnement où pydicom 2.x est déjà
   installé (très courant — de nombreux outils d'imagerie médicale y sont épinglés) satisfait
   la contrainte et produit une installation **dont toutes les sorties DICOM plantent**.
@@ -4835,7 +4840,7 @@ diffère de l'entrée. Le rapport est explicitement conçu pour être envoyé pa
 `save_as(..., enforce_file_format=...)` n'existe pas en pydicom 2.x. Une installation
 satisfaisant la contrainte déclarée voit **toutes ses sorties DICOM planter**, et ni
 `regix doctor` ni la CI ne le détectent. Le code mélange par ailleurs les deux API
-(`is_little_endian` est un vestige de la 2.x, inopérant en 3.x).
+(`is_little_endian` est un vestige de la 2.x, déprécié en 3.x).
 → `pydicom>=3.0`, nettoyage des vestiges, version affichée par `doctor`.
 
 **4. B-04 — Le garde-fou de quantification est mort** · *Important*

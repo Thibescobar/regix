@@ -189,14 +189,23 @@ def apply_intensity_prep(volume: Volume, prep: ImagePrep) -> Volume:
 
     # NaN/Inf: elastix registrations diverge silently on them.
     arr = sitk.GetArrayViewFromImage(image)
-    n_bad = int(np.count_nonzero(~np.isfinite(arr)))
+    finite_mask = np.isfinite(arr)
+    n_bad = int(arr.size - np.count_nonzero(finite_mask))
     if n_bad:
-        log.warning("%d non-finite voxels replaced with the finite minimum", n_bad)
+        finite = arr[finite_mask]
+        finite_min = float(finite.min()) if finite.size else 0.0
+        finite_max = float(finite.max()) if finite.size else 0.0
+        log.warning(
+            "%d non-finite voxels replaced (NaN/-Inf with %.4g, +Inf with %.4g)",
+            n_bad,
+            finite_min,
+            finite_max,
+        )
         clean = np.nan_to_num(
             sitk.GetArrayFromImage(image),
-            nan=float(np.nanmin(arr[np.isfinite(arr)])) if np.isfinite(arr).any() else 0.0,
-            posinf=float(np.nanmax(arr[np.isfinite(arr)])) if np.isfinite(arr).any() else 0.0,
-            neginf=float(np.nanmin(arr[np.isfinite(arr)])) if np.isfinite(arr).any() else 0.0,
+            nan=finite_min,
+            posinf=finite_max,
+            neginf=finite_min,
         )
         fixed = sitk.GetImageFromArray(clean)
         fixed.CopyInformation(image)

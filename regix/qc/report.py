@@ -1,4 +1,4 @@
-"""Quality-control report: a single self-contained HTML file.
+"""Quality-control report with embedded images or compact sidecars.
 
 Field constraints that dictate its shape:
 
@@ -25,6 +25,7 @@ import numpy as np
 import SimpleITK as sitk
 
 from regix.logging_utils import get_logger
+from regix.preprocess.geometry import same_grid
 
 log = get_logger("qc.report")
 
@@ -75,15 +76,22 @@ def _aspects(spacing_xyz: Sequence[float]) -> list[float]:
     return [sy / sx, sz / sx, sz / sy]
 
 
-def _figure_to_base64(fig) -> str:
+def _figure_to_base64(fig, image_format: str = "png", dpi: int = 110) -> str:
     buffer = io.BytesIO()
-    fig.savefig(buffer, format="png", dpi=110, bbox_inches="tight", facecolor=fig.get_facecolor())
+    fig.savefig(
+        buffer,
+        format=image_format,
+        dpi=dpi,
+        bbox_inches="tight",
+        facecolor=fig.get_facecolor(),
+    )
     buffer.seek(0)
     encoded = base64.b64encode(buffer.read()).decode("ascii")
     import matplotlib.pyplot as plt
 
     plt.close(fig)
-    return f"data:image/png;base64,{encoded}"
+    mime = "jpeg" if image_format == "jpeg" else image_format
+    return f"data:image/{mime};base64,{encoded}"
 
 
 def overlay_figure(
@@ -93,6 +101,8 @@ def overlay_figure(
     mask: sitk.Image | None = None,
     n_slices: int = 3,
     title: str = "",
+    image_format: str = "png",
+    dpi: int = 110,
 ) -> str:
     """Fixed (grey) / moving (hot) overlay, before and after registration."""
     import matplotlib
@@ -143,7 +153,7 @@ def overlay_figure(
                 col += 1
     fig.suptitle(title or "Overlay: fixed (grey) / moving (hot)", fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
-    return _figure_to_base64(fig)
+    return _figure_to_base64(fig, image_format, dpi)
 
 
 def _series(b_arr, b_bounds, a_arr, a_bounds):
@@ -153,7 +163,12 @@ def _series(b_arr, b_bounds, a_arr, a_bounds):
 
 
 def checkerboard_figure(
-    fixed: sitk.Image, moving_after: sitk.Image, mask: sitk.Image | None = None, tiles: int = 8
+    fixed: sitk.Image,
+    moving_after: sitk.Image,
+    mask: sitk.Image | None = None,
+    tiles: int = 8,
+    image_format: str = "png",
+    dpi: int = 110,
 ) -> str:
     """Checkerboard: discontinuities at tile borders betray residual misalignment."""
     import matplotlib
@@ -183,7 +198,7 @@ def checkerboard_figure(
         ax.set_yticks([])
     fig.suptitle("Checkerboard: fixed / registered moving", fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
-    return _figure_to_base64(fig)
+    return _figure_to_base64(fig, image_format, dpi)
 
 
 def contour_figure(
@@ -191,6 +206,8 @@ def contour_figure(
     fixed_labelmap: sitk.Image | None,
     warped_labelmap: sitk.Image | None,
     mask: sitk.Image | None = None,
+    image_format: str = "png",
+    dpi: int = 110,
 ) -> str | None:
     """Organ contours: reference in green, registered in magenta."""
     if fixed_labelmap is None or warped_labelmap is None:
@@ -231,7 +248,7 @@ def contour_figure(
         ax.set_yticks([])
     fig.suptitle("Contours: fixed organs (green) vs registered organs (magenta)", fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
-    return _figure_to_base64(fig)
+    return _figure_to_base64(fig, image_format, dpi)
 
 
 #: Below this spread of det(J), the transform is effectively linear and the map
@@ -243,6 +260,8 @@ def jacobian_figure(
     displacement_field: sitk.Image,
     mask: sitk.Image | None = None,
     stats: dict[str, Any] | None = None,
+    image_format: str = "png",
+    dpi: int = 110,
 ) -> str | None:
     """Map of the Jacobian determinant, on a scale adapted to the actual data.
 
@@ -305,7 +324,27 @@ def jacobian_figure(
     folding = int((finite <= 0).sum())
     subtitle = f" — {folding} folded voxels" if folding else " — no folding"
     fig.suptitle(f"Jacobian determinant (1 = volume preserved, < 0 = folding){subtitle}", fontsize=11)
-    return _figure_to_base64(fig)
+    return _figure_to_base64(fig, image_format, dpi)
+
+
+def write_figure_sidecars(
+    figures: dict[str, str],
+    directory: str | Path,
+    image_format: str,
+) -> dict[str, str]:
+    """Decode data URIs beside the report and return browser-relative sources."""
+    target = Path(directory)
+    target.mkdir(parents=True, exist_ok=True)
+    sources: dict[str, str] = {}
+    extension = "jpg" if image_format == "jpeg" else image_format
+    for name, uri in figures.items():
+        if not uri.startswith("data:image/") or ";base64," not in uri:
+            sources[name] = uri
+            continue
+        path = target / f"{name}.{extension}"
+        path.write_bytes(base64.b64decode(uri.partition(",")[2], validate=True))
+        sources[name] = f"{target.name}/{path.name}"
+    return sources
 
 
 def _centre_index(image: sitk.Image, mask: sitk.Image | None) -> tuple[int, int, int]:
@@ -314,8 +353,10 @@ def _centre_index(image: sitk.Image, mask: sitk.Image | None) -> tuple[int, int,
     default = (size[2] // 2, size[1] // 2, size[0] // 2)
     if mask is None:
         return default
+    if not same_grid(image, mask):
+        raise ValueError("QC mask grid is incompatible with the figure image")
     arr = sitk.GetArrayViewFromImage(mask)
-    if arr.shape != (size[2], size[1], size[0]) or not np.any(arr > 0):
+    if not np.any(arr > 0):
         return default
     idx = np.argwhere(arr > 0).mean(axis=0)
     return (int(idx[0]), int(idx[1]), int(idx[2]))
@@ -479,6 +520,10 @@ def build_html_report(path: str | Path, context: dict[str, Any]) -> Path:
             sections.append(f"<h2>{caption}</h2>" + _table(_kv_rows(data), ["key", "value"]))
 
     warnings = context.get("warnings") or []
+    degradations = context.get("degradations") or []
+    if degradations:
+        items = "".join(f"<li>{html.escape(str(item))}</li>" for item in degradations)
+        sections.append(f"<h2>Requested but not completed ({len(degradations)})</h2><ul>{items}</ul>")
     if warnings:
         items = "".join(f"<li>{html.escape(str(w))}</li>" for w in warnings)
         sections.append(f"<h2>Warnings ({len(warnings)})</h2><ul>{items}</ul>")

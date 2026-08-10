@@ -11,23 +11,33 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import SimpleITK as sitk
 
 from regix.logging_utils import get_logger
-from regix.preprocess.geometry import resample_like
-from regix.registration.convexadam import displacement_field_from_transform
+from regix.preprocess.geometry import displacement_field_from_transform, resample_like
 from regix.registration.engine import apply_transform
 
 log = get_logger("registration.warp")
 
+TransformCapability = Literal["points", "inverse", "field", "sitk", "disk-resample"]
+
 
 class AppliedTransform(ABC):
-    """Final transform, ready to be applied. Convention: fixed -> moving."""
+    """Final transform, ready to be applied. Convention: fixed -> moving.
+
+    Optional operations are announced by :attr:`capabilities`; callers do not have to
+    infer why a method returned ``None``. ``disk-resample`` explicitly means that
+    :meth:`resample` invokes transformix and writes temporary files in ``work_dir``.
+    """
 
     kind: str = "abstract"
+
+    @property
+    @abstractmethod
+    def capabilities(self) -> frozenset[TransformCapability]: ...
 
     @abstractmethod
     def resample(
@@ -69,6 +79,18 @@ class ElastixAppliedTransform(AppliedTransform):
             raise FileNotFoundError(self.parameter_file)
         self.work_dir = Path(work_dir) if work_dir else None
         self._linear = linear_transform
+
+    @property
+    def capabilities(self) -> frozenset[TransformCapability]:
+        values: set[TransformCapability] = {"field", "disk-resample"}
+        if self._linear is not None:
+            values.update(("points", "sitk"))
+            try:
+                self._linear.GetInverse()
+                values.add("inverse")
+            except Exception:
+                pass
+        return frozenset(values)
 
     def resample(self, moving, reference, is_label=False, default_value=None):
         result, _ = apply_transform(
@@ -117,6 +139,7 @@ class ElastixAppliedTransform(AppliedTransform):
             "kind": self.kind,
             "parameter_file": str(self.parameter_file),
             "linear_available": self._linear is not None,
+            "capabilities": sorted(self.capabilities),
         }
 
 
@@ -129,6 +152,16 @@ class SitkAppliedTransform(AppliedTransform):
     def __init__(self, transform: sitk.Transform, label: str = "composite"):
         self.transform = transform
         self.label = label
+
+    @property
+    def capabilities(self) -> frozenset[TransformCapability]:
+        values: set[TransformCapability] = {"points", "field", "sitk"}
+        try:
+            self.transform.GetInverse()
+            values.add("inverse")
+        except Exception:
+            pass
+        return frozenset(values)
 
     def resample(self, moving, reference, is_label=False, default_value=None):
         return resample_like(
@@ -150,7 +183,7 @@ class SitkAppliedTransform(AppliedTransform):
         return self.transform
 
     def describe(self):
-        return {"kind": self.kind, "label": self.label}
+        return {"kind": self.kind, "label": self.label, "capabilities": sorted(self.capabilities)}
 
 
 # --------------------------------------------------------------------------- #
@@ -177,10 +210,12 @@ def warp_landmarks_moving_to_fixed(
     not invent an inverse: we return None rather than a silent approximation -- an
     invisible 3 mm error is more dangerous than no result at all.
     """
-    t = applied.as_sitk_transform()
-    if t is None:
+    if "inverse" not in applied.capabilities:
         log.info("inversion unavailable for a non-linear transform")
         return None
+    t = applied.as_sitk_transform()
+    if t is None:  # defensive: capabilities and implementation must agree
+        raise RuntimeError("AppliedTransform advertises inverse without a SimpleITK transform")
     try:
         inverse = t.GetInverse()
     except Exception as exc:

@@ -19,6 +19,7 @@ a registration silently fail on oblique slices.
 
 from __future__ import annotations
 
+import importlib.metadata
 import tempfile
 from pathlib import Path
 
@@ -51,7 +52,16 @@ def engine_available() -> tuple[bool, str]:
         itk = require_itk()
     except RuntimeError as exc:
         return False, str(exc)
-    return True, f"itk {itk.Version.GetITKVersion()}"
+    try:
+        binding = importlib.metadata.version("itk-elastix")
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover
+        binding = "unknown"
+    try:
+        image_f = itk.Image[itk.F, 3]
+        itk.ElastixRegistrationMethod[image_f, image_f].New()
+    except Exception as exc:
+        return False, f"itk-elastix {binding} cannot instantiate its native filter ({type(exc).__name__})"
+    return True, f"itk-elastix {binding} (ITK {itk.Version.GetITKVersion()})"
 
 
 def image_types():
@@ -90,7 +100,33 @@ def itk_to_sitk(image, is_vector: bool = False) -> sitk.Image:
     return out
 
 
-def itk_transform_to_sitk(itk_transform, work_dir: str | Path | None = None) -> sitk.Transform:
+def _verification_probes(reference: sitk.Image | None) -> list[tuple[float, float, float]]:
+    """Physical probes inside a reference grid, or conservative legacy probes."""
+    if reference is None:
+        return [(0.0, 0.0, 0.0), (57.0, -31.0, 93.0), (-42.0, 68.0, -17.0)]
+    size = np.maximum(np.asarray(reference.GetSize(), dtype=float) - 1.0, 0.0)
+    center_index = size / 2.0
+    center = np.asarray(
+        reference.TransformContinuousIndexToPhysicalPoint(center_index.tolist()),
+        dtype=float,
+    )
+    probes = [center]
+    for x in (0.0, size[0]):
+        for y in (0.0, size[1]):
+            for z in (0.0, size[2]):
+                corner = np.asarray(
+                    reference.TransformContinuousIndexToPhysicalPoint([x, y, z]),
+                    dtype=float,
+                )
+                probes.append(center + 0.9 * (corner - center))
+    return [tuple(float(value) for value in point) for point in probes]
+
+
+def itk_transform_to_sitk(
+    itk_transform,
+    work_dir: str | Path | None = None,
+    reference: sitk.Image | None = None,
+) -> sitk.Transform:
     """Convert an ITK transform (including composite / B-spline) to a ``sitk.Transform``.
 
     Going through an HDF5 file is deliberate: it is the only path that exactly
@@ -105,7 +141,7 @@ def itk_transform_to_sitk(itk_transform, work_dir: str | Path | None = None) -> 
     transform = sitk.ReadTransform(str(path))
 
     # Regression guard: the conversion must be exact.
-    probes = [(0.0, 0.0, 0.0), (57.0, -31.0, 93.0), (-42.0, 68.0, -17.0)]
+    probes = _verification_probes(reference)
     errors = []
     for probe in probes:
         try:
@@ -114,7 +150,12 @@ def itk_transform_to_sitk(itk_transform, work_dir: str | Path | None = None) -> 
             errors.append(float(np.linalg.norm(a - b)))
         except Exception:  # pragma: no cover - point outside the B-spline support
             continue
-    if errors and max(errors) > 1e-3:
+    if not errors:
+        raise ValueError(
+            "ITK -> SimpleITK conversion could not be verified: every probe lies outside "
+            "the transform support"
+        )
+    if max(errors) > 1e-3:
         log.warning(
             "ITK -> SimpleITK conversion is imprecise (max discrepancy %.4f mm): "
             "outputs will be computed by transformix instead",
@@ -124,6 +165,6 @@ def itk_transform_to_sitk(itk_transform, work_dir: str | Path | None = None) -> 
     log.debug(
         "transform converted: %s (max discrepancy %.2e mm)",
         type(transform).__name__,
-        max(errors) if errors else 0.0,
+        max(errors),
     )
     return transform
