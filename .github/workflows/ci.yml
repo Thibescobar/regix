@@ -21,6 +21,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,11 +37,20 @@ jobs:
         run: ruff check regix tests
       - name: Format check
         run: ruff format --check --diff regix tests
-        continue-on-error: true   # formatting is advisory, not a merge blocker
+      - name: Static types (progressive)
+        run: |
+          pip install "mypy>=1.10,<2" "types-PyYAML>=6.0.12,<7"
+          mypy regix
+        continue-on-error: true
+      - name: Dead-code inventory
+        run: |
+          pip install "vulture>=2.11,<3"
+          vulture regix .vulture_allowlist.py --min-confidence 90
 
   test:
     name: Tests (py${{ matrix.python }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -54,7 +64,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install Regix (core only, no GPU, no optional weights)
+      - name: Install the CPU test environment (no GPU or model weights)
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
@@ -76,15 +86,52 @@ jobs:
         # a voxel. Slower (~2-4 min), so run after the others.
         run: pytest tests/test_pipeline.py -q --durations=10
 
+      - name: Contract and documentation tests
+        # The safety net the correction waves lean on: the golden transform, what a run
+        # leaves on disk, and the claims the README makes about itself. The former audit
+        # xfails are ordinary regression tests now that their contracts are corrected.
+        #
+        # The golden reference is machine-specific (elastix determinism is a property of
+        # the build), so on a runner it skips rather than failing. What still runs
+        # everywhere: the artefact inventory, strict-JSON serialisation, the PHI canary
+        # and the whole documentation file.
+        run: pytest tests/test_contract.py tests/test_documentation.py -q --durations=10
+
       - name: Coverage gate
         if: matrix.python == '3.12'
         # The threshold sits just below the figure on the README badge, so the badge
         # cannot silently drift: a drop in coverage turns CI red.
-        run: pytest -q --cov=regix --cov-report=term-missing:skip-covered --cov-fail-under=75
+        run: pytest -q --cov=regix --cov-report=term-missing:skip-covered --cov-fail-under=81
+
+  api:
+    name: HTTP service
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Regix with the api extra
+        # The only job that installs an optional extra. Two things are being checked
+        # here, not one: that `regix[api]` still resolves -- no other job would notice
+        # if it stopped -- and that the service behaves. Before this job existed,
+        # regix/api.py was never even imported in CI, so a syntax error in it would
+        # have reached main.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[api,dev]" httpx
+
+      - name: Service tests
+        run: pytest tests/test_api.py -q --durations=10
 
   cli:
     name: CLI smoke test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -126,7 +173,7 @@ jobs:
             --fixed-modality CT --moving-modality CT --overwrite --log-level WARNING
           test -f ci_out/report.html
           test -f ci_out/run_manifest.json
-          test -f ci_out/transform/final_transform.txt
+          test -f ci_out/transform/final_transform.itk.txt
           test -f ci_out/moving_registered.nii.gz
 
       - name: Upload the QC report as an artifact
@@ -137,5 +184,72 @@ jobs:
           path: |
             ci_out/report.html
             ci_out/run_manifest.json
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
+
+  extras:
+    name: Optional extra (${{ matrix.extra }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        extra: [report, api, features, organs]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install one extra and import the package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[${{ matrix.extra }}]"
+          python -c "import regix; print(regix.__version__)"
+
+  packaging:
+    name: Build and install distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build and inspect sdist/wheel
+        run: |
+          pip install "build>=1.2,<2" "twine>=5,<7"
+          python -m build
+          twine check dist/*
+      - name: Install the wheel outside the checkout
+        run: |
+          python -m venv /tmp/regix-wheel
+          /tmp/regix-wheel/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/regix-wheel/bin/regix --version
+          /tmp/regix-wheel/bin/regix presets base > /tmp/base.yaml
+          /tmp/regix-wheel/bin/python -c "from regix.config import load_preset; assert load_preset('base').stages"
+
+  dependency-contracts:
+    name: Dependency contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Reject the unsupported pydicom 2.x line
+        run: |
+          python -m pip install --upgrade pip
+          if pip install -e . "pydicom==2.4.4"; then
+            echo "pydicom 2.4.4 unexpectedly satisfied the project metadata"
+            exit 1
+          fi
+      - name: Reproduce the locked numerical environment
+        run: |
+          pip install -r requirements-lock.txt
+          pip install -e . --no-deps
+          regix doctor
+          pytest tests/test_contract.py -k "golden or two_runs" -q
