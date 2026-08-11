@@ -69,21 +69,33 @@ def mind_ssc_features(
         steps = (dilation, dilation, dilation)
     log.debug("MIND-SSC: radius=%d, per-axis step=%s", radius, steps)
 
-    shifted = np.stack([_shift(vol, offset * np.asarray(steps)) for offset in _NEIGHBOURS], axis=0)
+    estimated_gb = int(np.prod(vol.shape)) * 17 * np.dtype(np.float32).itemsize / 1e9
+    if estimated_gb > 4.0:
+        log.warning(
+            "MIND-SSC estimated at %.1f GB for %s: increase working_spacing_mm or enable organs.roi_crop",
+            estimated_gb,
+            vol.shape,
+        )
 
+    # The 12-channel result is unavoidable. Compute one pair at a time so six shifted
+    # volumes and a second 12-channel exponential are never resident together.
     distances = np.empty((len(_PAIRS),) + vol.shape, dtype=np.float32)
     for k, (a, b) in enumerate(_PAIRS):
-        diff = shifted[a] - shifted[b]
-        distances[k] = _box_mean(diff * diff, radius)
+        shifted_a = _shift(vol, _NEIGHBOURS[a] * np.asarray(steps))
+        shifted_b = _shift(vol, _NEIGHBOURS[b] * np.asarray(steps))
+        diff = shifted_a - shifted_b
+        np.square(diff, out=diff)
+        distances[k] = _box_mean(diff, radius)
 
     variance = distances.mean(axis=0, keepdims=True)
     # Bound the variance: avoids exp(-large) = 0 everywhere inside air.
     median = float(np.median(variance[variance > 0])) if np.any(variance > 0) else 1.0
     variance = np.clip(variance, 1e-3 * median, 1e3 * median) + eps
 
-    mind = np.exp(-distances / variance)
-    mind /= mind.max(axis=0, keepdims=True) + eps
-    return mind.astype(np.float32)
+    np.divide(-distances, variance, out=distances)
+    np.exp(distances, out=distances)
+    distances /= distances.max(axis=0, keepdims=True) + eps
+    return distances
 
 
 def _box_mean(volume: np.ndarray, radius: int) -> np.ndarray:

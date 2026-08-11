@@ -22,7 +22,7 @@ log = get_logger("features.reduce")
 
 
 def voxel_normalize(features: np.ndarray, mode: str = "l2", eps: float = 1e-6) -> np.ndarray:
-    """Normalise each voxel across channels (required by the anatomix-dev variants)."""
+    """Normalise each voxel across channels when requested by the Regix configuration."""
     if mode == "none":
         return features
     f = features.astype(np.float32, copy=False)
@@ -67,18 +67,22 @@ def joint_pca_reduce(
         _sample_voxels(moving_features, moving_mask, max_voxels // 2, rng),
     ]
     data = np.concatenate(samples, axis=0)  # (N, C)
-    mean = data.mean(axis=0, keepdims=True)
+    mean = data.mean(axis=0, keepdims=True, dtype=np.float32)
     centred = data - mean
     # Economy SVD: C is small (<= 32), the cost is dominated by N.
     _, singular, vt = np.linalg.svd(centred, full_matrices=False)
-    basis = vt[:n_components]  # (k, C)
+    basis = np.asarray(vt[:n_components], dtype=np.float32)  # (k, C)
     variance = singular**2
     explained = float(variance[:n_components].sum() / max(variance.sum(), 1e-12))
 
     def _project(features: np.ndarray) -> np.ndarray:
         flat = features.reshape(features.shape[0], -1).T  # (V, C)
-        proj = (flat - mean) @ basis.T  # (V, k)
-        return proj.T.reshape((n_components,) + features.shape[1:]).astype(np.float32)
+        projection = np.empty((flat.shape[0], n_components), dtype=np.float32)
+        chunk_size = max(1, 2_000_000 // max(1, flat.shape[1]))
+        for start in range(0, flat.shape[0], chunk_size):
+            stop = min(start + chunk_size, flat.shape[0])
+            projection[start:stop] = (flat[start:stop] - mean) @ basis.T
+        return projection.T.reshape((n_components,) + features.shape[1:])
 
     info = {
         "applied": True,
@@ -115,7 +119,7 @@ def _sample_voxels(
             log.debug("mask too small (%d voxels): sampling over the whole volume", keep.size)
     if flat.shape[0] > n:
         flat = flat[rng.choice(flat.shape[0], size=n, replace=False)]
-    return flat.astype(np.float64, copy=False)
+    return flat.astype(np.float32, copy=False)
 
 
 def features_to_sitk(features: np.ndarray, reference: sitk.Image, scale: float = 1.0) -> list[sitk.Image]:

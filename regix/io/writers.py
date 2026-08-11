@@ -14,18 +14,60 @@ produce three distinct things, not just a NIfTI:
 from __future__ import annotations
 
 import datetime as _dt
+import os
+import re
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import numpy as np
 import SimpleITK as sitk
 
+from regix import __version__
+from regix.env import DICOM_UID_ROOT_ENV
 from regix.logging_utils import get_logger
 
 log = get_logger("io.writers")
 
 SPATIAL_REGISTRATION_SOP_CLASS = "1.2.840.10008.5.1.4.1.1.66.1"
-REGIX_UID_ROOT = "1.2.826.0.1.3680043.10.1337"  # test root; replace with the site's own root
+TEST_UID_ROOT = "1.2.826.0.1.3680043.10.1337"
+# Backward-compatible public name. New code must call ``resolve_uid_root`` so a site root
+# can come from configuration or REGIX_DICOM_UID_ROOT.
+REGIX_UID_ROOT = TEST_UID_ROOT
+
+
+def resolve_uid_root(value: str | None = None) -> str:
+    """Return and validate the site-owned DICOM UID root used for generated objects."""
+    root = (value or os.getenv(DICOM_UID_ROOT_ENV) or TEST_UID_ROOT).rstrip(".")
+    if len(root) > 54:
+        raise ValueError("DICOM UID root must be at most 54 characters to leave room for a suffix")
+    components = root.split(".")
+    if (
+        not root
+        or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", root)
+        or any(len(component) > 1 and component.startswith("0") for component in components)
+        or components[0] not in {"1", "2"}
+    ):
+        raise ValueError(
+            "DICOM UID root must contain numeric dot-separated components without leading zeroes"
+        )
+    if root == TEST_UID_ROOT:
+        log.warning(
+            "using Regix's test DICOM UID root; configure output.dicom_uid_root or "
+            "REGIX_DICOM_UID_ROOT before sending objects to a production PACS"
+        )
+    return root
+
+
+def _new_uid(root: str) -> str:
+    from pydicom.uid import generate_uid
+
+    return generate_uid(prefix=root + ".")
+
+
+def _set_equipment_identity(ds) -> None:
+    ds.Manufacturer = "Regix"
+    ds.ManufacturerModelName = "Regix registration"
+    ds.SoftwareVersions = __version__
 
 
 # --------------------------------------------------------------------------- #
@@ -54,16 +96,21 @@ def save_image(
 def load_landmarks(path: str | Path) -> np.ndarray:
     """Read landmarks in physical coordinates (mm).
 
-    Accepted formats: one ``x y z`` (or ``x,y,z``) line per point, with ``#``
-    comments; also elastix point files (``point``/``index`` header plus a count,
-    which are skipped).
+    Accepted formats: one physical ``x y z`` (or ``x,y,z``) line per point, with
+    ``#`` comments, or an elastix ``point`` file. Elastix ``index`` files are
+    refused because converting indices requires the corresponding reference grid.
     """
     lines = [
         ln.strip()
         for ln in Path(path).read_text(encoding="utf-8").splitlines()
         if ln.strip() and not ln.strip().startswith("#")
     ]
-    if lines and lines[0].lower() in ("point", "index"):
+    if lines and lines[0].lower() == "index":
+        raise ValueError(
+            f"{path} contains elastix index coordinates; convert them to physical 'point' "
+            "coordinates with the reference image before using them as landmarks"
+        )
+    if lines and lines[0].lower() == "point":
         lines = lines[2:]  # elastix header: keyword then point count
     pts = []
     for ln in lines:
@@ -76,20 +123,6 @@ def load_landmarks(path: str | Path) -> np.ndarray:
     return np.asarray(pts, dtype=np.float64)
 
 
-def save_landmarks(
-    points: np.ndarray | Sequence[Sequence[float]], path: str | Path, elastix_format: bool = False
-) -> Path:
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    arr = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    lines: list[str] = []
-    if elastix_format:
-        lines += ["point", str(len(arr))]
-    lines += [" ".join(f"{v:.6f}" for v in row) for row in arr]
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return p
-
-
 # --------------------------------------------------------------------------- #
 # Derived DICOM
 # --------------------------------------------------------------------------- #
@@ -100,6 +133,7 @@ def write_derived_dicom(
     series_description_suffix: str = "REGIX registered",
     frame_of_reference_uid: str | None = None,
     series_number_offset: int = 9000,
+    uid_root: str | None = None,
 ) -> Path:
     """Write ``image`` as a derived DICOM series.
 
@@ -115,7 +149,7 @@ def write_derived_dicom(
     try:
         import pydicom
         from pydicom.dataset import Dataset
-        from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+        from pydicom.uid import ExplicitVRLittleEndian, SecondaryCaptureImageStorage
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("pydicom is required for DICOM export (pip install pydicom)") from exc
 
@@ -125,6 +159,7 @@ def write_derived_dicom(
     out.mkdir(parents=True, exist_ok=True)
 
     template = pydicom.dcmread(str(template_files[0]), stop_before_pixels=True, force=True)
+    root = resolve_uid_root(uid_root)
     if image.GetDimension() != 3:
         raise ValueError("write_derived_dicom expects a 3D volume")
 
@@ -149,18 +184,45 @@ def write_derived_dicom(
         intercept = vmin
         stored = np.clip(np.rint((arr - intercept) / slope), 0, 32000).astype(np.int16)
 
-    study_uid = getattr(template, "StudyInstanceUID", None) or generate_uid(prefix=REGIX_UID_ROOT + ".")
-    series_uid = generate_uid(prefix=REGIX_UID_ROOT + ".")
-    for_uid = (
-        frame_of_reference_uid
-        or getattr(template, "FrameOfReferenceUID", None)
-        or generate_uid(prefix=REGIX_UID_ROOT + ".")
-    )
+    study_uid = getattr(template, "StudyInstanceUID", None) or _new_uid(root)
+    series_uid = _new_uid(root)
+    for_uid = frame_of_reference_uid or getattr(template, "FrameOfReferenceUID", None) or _new_uid(root)
     now = _dt.datetime.now()
+    source_sop_class = (
+        getattr(
+            template,
+            "SOPClassUID",
+            getattr(getattr(template, "file_meta", None), "MediaStorageSOPClassUID", None),
+        )
+        or SecondaryCaptureImageStorage
+    )
+
+    # Explicit whitelist: acquisition and vendor-private geometry from the source no longer
+    # describes a resampled image and must not silently survive into the derived series.
+    copied_tags = (
+        "SpecificCharacterSet",
+        "PatientName",
+        "PatientID",
+        "PatientBirthDate",
+        "PatientSex",
+        "StudyDate",
+        "StudyTime",
+        "StudyID",
+        "AccessionNumber",
+        "ReferringPhysicianName",
+        "InstitutionName",
+        "Modality",
+        "RescaleType",
+        "Units",
+    )
 
     for k in range(n_slices):
-        ds: Dataset = template.copy()
-        ds.SOPInstanceUID = generate_uid(prefix=REGIX_UID_ROOT + ".")
+        ds = Dataset()
+        for tag in copied_tags:
+            if tag in template:
+                setattr(ds, tag, getattr(template, tag))
+        ds.SOPClassUID = source_sop_class
+        ds.SOPInstanceUID = _new_uid(root)
         ds.SeriesInstanceUID = series_uid
         ds.StudyInstanceUID = study_uid
         ds.FrameOfReferenceUID = for_uid
@@ -171,7 +233,17 @@ def write_derived_dicom(
         ds.InstanceNumber = k + 1
         ds.ContentDate = now.strftime("%Y%m%d")
         ds.ContentTime = now.strftime("%H%M%S")
+        ds.SeriesDate = now.strftime("%Y%m%d")
+        ds.SeriesTime = now.strftime("%H%M%S")
+        ds.InstanceCreationDate = now.strftime("%Y%m%d")
+        ds.InstanceCreationTime = now.strftime("%H%M%S")
         ds.DerivationDescription = "Resampled with Regix (research software, not a medical device)"
+        derivation_code = Dataset()
+        derivation_code.CodeValue = "113085"
+        derivation_code.CodingSchemeDesignator = "DCM"
+        derivation_code.CodeMeaning = "Spatial resampling"
+        ds.DerivationCodeSequence = [derivation_code]
+        _set_equipment_identity(ds)
 
         ds.Rows, ds.Columns = int(rows), int(cols)
         ds.PixelSpacing = [f"{spacing[1]:.6f}", f"{spacing[0]:.6f}"]  # [row, column] = [y, x]
@@ -190,23 +262,19 @@ def write_derived_dicom(
         ds.PixelRepresentation = 1
         ds.RescaleSlope = f"{slope:.9g}"
         ds.RescaleIntercept = f"{intercept:.9g}"
-        for tag in ("WindowCenter", "WindowWidth", "LargestImagePixelValue", "SmallestImagePixelValue"):
-            if tag in ds:
-                del ds[tag]
         ds.PixelData = stored[k].tobytes()
         # Under explicit VR, PixelData has an ambiguous VR ('OB or OW') that pydicom
         # refuses to write: 16 bits per sample implies OW.
         ds["PixelData"].VR = "OW"
 
-        ds.file_meta = getattr(template, "file_meta", None) or pydicom.dataset.FileMetaDataset()
+        ds.file_meta = pydicom.dataset.FileMetaDataset()
         ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
-        ds.file_meta.MediaStorageSOPClassUID = getattr(
-            ds, "SOPClassUID", template.file_meta.MediaStorageSOPClassUID
-        )
+        ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
         ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-        ds.is_little_endian = True
-        ds.is_implicit_VR = False
-        ds.save_as(str(out / f"regix_{k + 1:05d}.dcm"), enforce_file_format=False)
+        ds.file_meta.ImplementationClassUID = root + ".1"
+        ds.preamble = b"\0" * 128
+        ds.remove_private_tags()
+        ds.save_as(str(out / f"regix_{k + 1:05d}.dcm"), enforce_file_format=True)
 
     log.info("derived DICOM series: %d slices in %s", n_slices, out)
     return out
@@ -219,6 +287,7 @@ def write_spatial_registration_dicom(
     moving_reference_files: Sequence[str | Path],
     transformation_type: str = "RIGID",
     label: str = "REGIX",
+    uid_root: str | None = None,
 ) -> Path:
     """Write a DICOM Spatial Registration Object (rigid or affine).
 
@@ -231,7 +300,7 @@ def write_spatial_registration_dicom(
     try:
         import pydicom
         from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
-        from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+        from pydicom.uid import ExplicitVRLittleEndian
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("pydicom is required for the SRO export") from exc
 
@@ -240,67 +309,92 @@ def write_spatial_registration_dicom(
         raise ValueError(f"expected a 4x4 homogeneous matrix, got {M.shape}")
     if transformation_type not in ("RIGID", "RIGID_SCALE", "AFFINE"):
         raise ValueError("transformation_type must be RIGID, RIGID_SCALE or AFFINE")
+    if not fixed_reference_files or not moving_reference_files:
+        raise ValueError("both fixed and moving reference series must contain at least one file")
+
+    root = resolve_uid_root(uid_root)
 
     fixed_ds = pydicom.dcmread(str(fixed_reference_files[0]), stop_before_pixels=True, force=True)
     moving_ds = pydicom.dcmread(str(moving_reference_files[0]), stop_before_pixels=True, force=True)
 
     file_meta = FileMetaDataset()
     file_meta.MediaStorageSOPClassUID = SPATIAL_REGISTRATION_SOP_CLASS
-    file_meta.MediaStorageSOPInstanceUID = generate_uid(prefix=REGIX_UID_ROOT + ".")
+    file_meta.MediaStorageSOPInstanceUID = _new_uid(root)
     file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-    file_meta.ImplementationClassUID = REGIX_UID_ROOT + ".1"
+    file_meta.ImplementationClassUID = root + ".1"
 
     ds = FileDataset(str(path), {}, file_meta=file_meta, preamble=b"\0" * 128)
     now = _dt.datetime.now()
     ds.SOPClassUID = SPATIAL_REGISTRATION_SOP_CLASS
     ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
     ds.Modality = "REG"
-    ds.SeriesInstanceUID = generate_uid(prefix=REGIX_UID_ROOT + ".")
+    ds.SeriesInstanceUID = _new_uid(root)
     ds.SeriesNumber = 9900
     ds.SeriesDescription = f"{label} spatial registration"
     ds.InstanceNumber = 1
-    ds.ContentDate = ds.StudyDate = now.strftime("%Y%m%d")
-    ds.ContentTime = ds.StudyTime = now.strftime("%H%M%S")
+    ds.ContentDate = now.strftime("%Y%m%d")
+    ds.ContentTime = now.strftime("%H%M%S")
+    ds.SeriesDate = now.strftime("%Y%m%d")
+    ds.SeriesTime = now.strftime("%H%M%S")
+    ds.InstanceCreationDate = now.strftime("%Y%m%d")
+    ds.InstanceCreationTime = now.strftime("%H%M%S")
     ds.ContentLabel = label[:16].upper().replace(" ", "_")
     ds.ContentDescription = "Registration computed by Regix (research software)"
-    ds.ContentCreatorName = "Regix"
+    ds.ContentCreatorName = "REGIX"
+    _set_equipment_identity(ds)
 
     # Patient/study identity taken from the fixed image (the SRO lives in its study).
+    # These are type-2 attributes: they must exist even when the source value is unknown.
     for tag in (
         "PatientName",
         "PatientID",
         "PatientBirthDate",
         "PatientSex",
-        "StudyInstanceUID",
         "StudyID",
         "AccessionNumber",
         "ReferringPhysicianName",
     ):
-        if tag in fixed_ds:
-            setattr(ds, tag, getattr(fixed_ds, tag))
-    ds.FrameOfReferenceUID = getattr(
-        fixed_ds, "FrameOfReferenceUID", generate_uid(prefix=REGIX_UID_ROOT + ".")
+        setattr(ds, tag, getattr(fixed_ds, tag, ""))
+    ds.StudyInstanceUID = getattr(fixed_ds, "StudyInstanceUID", None) or _new_uid(root)
+    ds.StudyDate = getattr(fixed_ds, "StudyDate", "")
+    ds.StudyTime = getattr(fixed_ds, "StudyTime", "")
+    ds.FrameOfReferenceUID = getattr(fixed_ds, "FrameOfReferenceUID", None) or _new_uid(root)
+
+    def _references(files: Iterable[str | Path]) -> list[Dataset]:
+        refs = []
+        for filename in files:
+            source = pydicom.dcmread(str(filename), stop_before_pixels=True, force=True)
+            ref = Dataset()
+            ref.ReferencedSOPClassUID = getattr(source, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.7")
+            ref.ReferencedSOPInstanceUID = source.SOPInstanceUID
+            refs.append(ref)
+        return refs
+
+    def _referenced_series(files: Sequence[str | Path]) -> list[Dataset]:
+        grouped: dict[str, list[Dataset]] = {}
+        for filename in files:
+            source = pydicom.dcmread(str(filename), stop_before_pixels=True, force=True)
+            uid = str(getattr(source, "SeriesInstanceUID", ""))
+            ref = Dataset()
+            ref.ReferencedSOPClassUID = getattr(source, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.7")
+            ref.ReferencedSOPInstanceUID = source.SOPInstanceUID
+            grouped.setdefault(uid, []).append(ref)
+        series_items = []
+        for uid, refs in grouped.items():
+            item = Dataset()
+            item.SeriesInstanceUID = uid or _new_uid(root)
+            item.ReferencedInstanceSequence = refs
+            series_items.append(item)
+        return series_items
+
+    ds.ReferencedSeriesSequence = _referenced_series(
+        list(fixed_reference_files) + list(moving_reference_files)
     )
 
     def _registration_item(reference_ds, files: Iterable[str | Path], matrix: np.ndarray | None) -> Dataset:
         item = Dataset()
-        item.FrameOfReferenceUID = getattr(
-            reference_ds, "FrameOfReferenceUID", generate_uid(prefix=REGIX_UID_ROOT + ".")
-        )
-        studies = Dataset()
-        studies.ReferencedSOPClassUID = "1.2.840.10008.3.1.2.3.1"
-        studies.ReferencedSOPInstanceUID = getattr(reference_ds, "StudyInstanceUID", ds.StudyInstanceUID)
-        series = Dataset()
-        series.SeriesInstanceUID = getattr(reference_ds, "SeriesInstanceUID", generate_uid())
-        refs = []
-        for f in files:
-            d = pydicom.dcmread(str(f), stop_before_pixels=True, force=True)
-            r = Dataset()
-            r.ReferencedSOPClassUID = getattr(d, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.2")
-            r.ReferencedSOPInstanceUID = d.SOPInstanceUID
-            refs.append(r)
-        series.ReferencedInstanceSequence = refs
-        studies.RTReferencedSeriesSequence = [series]
+        item.FrameOfReferenceUID = getattr(reference_ds, "FrameOfReferenceUID", None) or _new_uid(root)
+        refs = _references(files)
         item.ReferencedImageSequence = refs
 
         matrix_item = Dataset()
@@ -310,6 +404,11 @@ def write_spatial_registration_dicom(
         flat = (np.eye(4) if matrix is None else matrix).reshape(-1)
         matrix_item.FrameOfReferenceTransformationMatrix = [f"{v:.10g}" for v in flat]
         reg = Dataset()
+        code = Dataset()
+        code.CodeValue = "125024"
+        code.CodingSchemeDesignator = "DCM"
+        code.CodeMeaning = "Image Content-based Alignment"
+        reg.RegistrationTypeCodeSequence = [code]
         reg.MatrixSequence = [matrix_item]
         item.MatrixRegistrationSequence = [reg]
         return item
@@ -317,12 +416,13 @@ def write_spatial_registration_dicom(
     # Item 1: the fixed image, identity transform (destination frame).
     # Item 2: the moving image, with the matrix that brings it into the fixed frame.
     ds.RegistrationSequence = [
-        _registration_item(fixed_ds, fixed_reference_files[:1], None),
-        _registration_item(moving_ds, moving_reference_files[:1], M),
+        _registration_item(fixed_ds, fixed_reference_files, None),
+        _registration_item(moving_ds, moving_reference_files, M),
     ]
 
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    ds.save_as(str(p), enforce_file_format=False)
+    ds.remove_private_tags()
+    ds.save_as(str(p), enforce_file_format=True)
     log.info("DICOM Spatial Registration Object written: %s", p.name)
     return p

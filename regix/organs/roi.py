@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import SimpleITK as sitk
@@ -28,9 +28,20 @@ from regix.preprocess.geometry import (
     body_mask,
     crop_to_mask,
     dilate_mask_mm,
+    same_grid,
 )
 
 log = get_logger("organs.roi")
+
+
+@dataclass(frozen=True)
+class Mask:
+    """A mask together with the role that determines whether dilation is valid."""
+
+    image: sitk.Image
+    role: Literal["criterion", "initialization", "qc", "body"]
+    dilated_mm: float = 0.0
+    source: str = "unknown"
 
 
 def combined_mask(
@@ -39,7 +50,8 @@ def combined_mask(
     targets: Sequence[str] | None = None,
     dilate_mm: float = 8.0,
     fallback_body_mask: bool = True,
-) -> sitk.Image | None:
+    role: Literal["criterion", "initialization", "qc", "body"] = "criterion",
+) -> Mask | None:
     """Criterion mask for elastix.
 
     Priority: target organs -> all available labels -> body mask (threshold plus
@@ -48,21 +60,34 @@ def combined_mask(
     if segmentation is not None:
         seg = (
             segmentation
-            if _same_grid(segmentation.labelmap, volume.image)
+            if same_grid(segmentation.labelmap, volume.image)
             else segmentation.resampled_to(volume.image)
         )
         wanted = resolve_targets(list(targets)) if targets else None
         try:
             mask = seg.mask_for(wanted)
         except ValueError:
-            log.warning("target organs missing: falling back to the union of all labels")
-            mask = seg.mask_for(None)
-        return dilate_mask_mm(mask, dilate_mm) if dilate_mm > 0 else mask
+            if not fallback_body_mask:
+                return None
+            log.warning("target organs missing: falling back to the native body mask")
+            return Mask(
+                image=body_mask(volume.image, volume.modality),
+                role=role,
+                dilated_mm=0.0,
+                source="native-body-mask-fallback",
+            )
+        image = dilate_mask_mm(mask, dilate_mm) if dilate_mm > 0 else mask
+        return Mask(image=image, role=role, dilated_mm=max(0.0, dilate_mm), source="segmentation")
 
     if not fallback_body_mask:
         return None
     log.debug("no segmentation: automatic body mask")
-    return body_mask(volume.image, volume.modality)
+    return Mask(
+        image=body_mask(volume.image, volume.modality),
+        role=role,
+        dilated_mm=0.0,
+        source="native-body-mask",
+    )
 
 
 def organ_centroids(
@@ -74,10 +99,10 @@ def organ_centroids(
     wanted = resolve_targets(list(organs)) if organs else segmentation.organs
     out: dict[str, np.ndarray] = {}
     for organ in wanted:
-        label = segmentation.label_of(organ)
-        if label is None:
+        labels = segmentation.labels_of(organ)
+        if not labels:
             continue
-        idx = np.argwhere(arr == label)
+        idx = np.argwhere(np.isin(arr, labels))
         if idx.size == 0:
             log.debug("organ %s is empty in the segmentation", organ)
             continue
@@ -95,8 +120,8 @@ def organ_volumes_ml(segmentation: OrganSegmentation) -> dict[str, float]:
     for label, name in segmentation.label_names.items():
         count = int(np.count_nonzero(arr == label))
         if count:
-            out[name] = round(count * voxel_ml, 2)
-    return out
+            out[name] = out.get(name, 0.0) + count * voxel_ml
+    return {name: round(value, 2) for name, value in out.items()}
 
 
 @dataclass
@@ -105,8 +130,6 @@ class OrganROI:
 
     fixed: Volume
     moving: Volume
-    fixed_region: tuple[list[int], list[int]] | None = None
-    moving_region: tuple[list[int], list[int]] | None = None
     info: dict[str, Any] = field(default_factory=dict)
 
 
@@ -136,23 +159,23 @@ def plan_roi(
     out: dict[str, Any] = {"applied": True, "targets": resolved, "margin_mm": margin}
 
     def _crop(volume: Volume, seg: OrganSegmentation, side: str):
-        seg = seg if _same_grid(seg.labelmap, volume.image) else seg.resampled_to(volume.image)
+        seg = seg if same_grid(seg.labelmap, volume.image) else seg.resampled_to(volume.image)
         try:
             mask = seg.mask_for(resolved)
         except ValueError as exc:
             log.warning("%s: %s -> no cropping on this side", side, exc)
-            return volume, None
+            return volume
         try:
-            cropped, region = crop_to_mask(volume.image, mask, margin)
+            cropped, _ = crop_to_mask(volume.image, mask, margin)
         except ValueError as exc:
             log.warning("%s: %s", side, exc)
-            return volume, None
+            return volume
         out[f"{side}_size_before"] = list(volume.size)
         out[f"{side}_size_after"] = list(cropped.GetSize())
-        return volume.with_image(cropped), region
+        return volume.with_image(cropped)
 
-    f_vol, f_region = _crop(fixed, fixed_segmentation, "fixed")
-    m_vol, m_region = _crop(moving, moving_segmentation, "moving")
+    f_vol = _crop(fixed, fixed_segmentation, "fixed")
+    m_vol = _crop(moving, moving_segmentation, "moving")
 
     before = np.prod(fixed.size) + np.prod(moving.size)
     after = np.prod(f_vol.size) + np.prod(m_vol.size)
@@ -166,7 +189,7 @@ def plan_roi(
         m_vol.size,
         out["speedup_estimate"],
     )
-    return OrganROI(fixed=f_vol, moving=m_vol, fixed_region=f_region, moving_region=m_region, info=out)
+    return OrganROI(fixed=f_vol, moving=m_vol, info=out)
 
 
 def roi_overlap_report(
@@ -179,17 +202,12 @@ def roi_overlap_report(
     """
     f_box = _physical_box(fixed.image)
     m_box = _physical_box(moving.image)
-    inter_lo = np.maximum(f_box[0], m_box[0])
-    inter_hi = np.minimum(f_box[1], m_box[1])
-    extent = np.maximum(inter_hi - inter_lo, 0.0)
-    inter_vol = float(np.prod(extent))
-    f_vol = float(np.prod(f_box[1] - f_box[0]))
-    m_vol = float(np.prod(m_box[1] - m_box[0]))
     report: dict[str, Any] = {
         "fixed_extent_mm": [round(v, 1) for v in (f_box[1] - f_box[0])],
         "moving_extent_mm": [round(v, 1) for v in (m_box[1] - m_box[0])],
-        "fov_overlap_fraction_fixed": round(inter_vol / f_vol, 3) if f_vol else 0.0,
-        "fov_overlap_fraction_moving": round(inter_vol / m_vol, 3) if m_vol else 0.0,
+        "fov_overlap_fraction_fixed": round(_fraction_inside(fixed.image, moving.image), 3),
+        "fov_overlap_fraction_moving": round(_fraction_inside(moving.image, fixed.image), 3),
+        "overlap_method": "deterministic Monte Carlo in oriented grids",
     }
     for name, mask in (("fixed", fixed_mask), ("moving", moving_mask)):
         if mask is not None:
@@ -197,14 +215,29 @@ def roi_overlap_report(
             report[f"{name}_mask_ml"] = round(
                 float(arr.sum()) * float(np.prod(mask.GetSpacing())) / 1000.0, 1
             )
-    if min(report["fov_overlap_fraction_fixed"], report["fov_overlap_fraction_moving"]) < 0.25:
-        log.warning(
-            "low field-of-view overlap (%.0f %% / %.0f %%): organ-based initialization "
-            "is strongly recommended (init.mode=organ_centroid)",
-            100 * report["fov_overlap_fraction_fixed"],
-            100 * report["fov_overlap_fraction_moving"],
-        )
     return report
+
+
+def _fraction_inside(source: sitk.Image, target: sitk.Image, n: int = 8192) -> float:
+    """Fraction of an oriented source grid that lies inside an oriented target grid."""
+    if source.GetDimension() != 3 or target.GetDimension() != 3:
+        return 0.0
+    rng = np.random.default_rng(20250101)
+    source_size = np.maximum(np.asarray(source.GetSize(), dtype=float) - 1.0, 0.0)
+    source_idx = rng.random((n, 3)) * source_size
+    source_scaled = source_idx * np.asarray(source.GetSpacing(), dtype=float)
+    source_direction = np.asarray(source.GetDirection(), dtype=float).reshape(3, 3)
+    points = np.asarray(source.GetOrigin(), dtype=float) + source_scaled @ source_direction.T
+
+    target_direction = np.asarray(target.GetDirection(), dtype=float).reshape(3, 3)
+    target_scaled = np.linalg.solve(
+        target_direction,
+        (points - np.asarray(target.GetOrigin(), dtype=float)).T,
+    ).T
+    target_idx = target_scaled / np.asarray(target.GetSpacing(), dtype=float)
+    upper = np.asarray(target.GetSize(), dtype=float) - 1.0
+    inside = np.all((target_idx >= 0.0) & (target_idx <= upper), axis=1)
+    return float(np.mean(inside))
 
 
 def _physical_box(image: sitk.Image) -> tuple[np.ndarray, np.ndarray]:
@@ -217,12 +250,3 @@ def _physical_box(image: sitk.Image) -> tuple[np.ndarray, np.ndarray]:
                 corners.append(image.TransformContinuousIndexToPhysicalPoint([ix, iy, iz]))
     pts = np.asarray(corners, dtype=float)
     return pts.min(axis=0), pts.max(axis=0)
-
-
-def _same_grid(a: sitk.Image, b: sitk.Image, tol: float = 1e-4) -> bool:
-    return (
-        a.GetSize() == b.GetSize()
-        and np.allclose(a.GetSpacing(), b.GetSpacing(), atol=tol)
-        and np.allclose(a.GetOrigin(), b.GetOrigin(), atol=tol)
-        and np.allclose(a.GetDirection(), b.GetDirection(), atol=tol)
-    )

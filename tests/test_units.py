@@ -14,6 +14,21 @@ import yaml
 from tests.conftest import known_rigid, make_phantom
 
 
+def _param_context(**overrides):
+    """Complete run context for parameter-map unit tests."""
+    from regix.registration.params import ParamContext
+
+    values = {
+        "working_spacing_mm": 2.0,
+        "fixed_modality": "UNKNOWN",
+        "moving_modality": "UNKNOWN",
+        "n_voxels": 64**3,
+        "intensity_range": (-1024.0, 3071.0),
+    }
+    values.update(overrides)
+    return ParamContext(**values)
+
+
 @contextmanager
 def captured_logs(logger_name: str, level: int = logging.WARNING):
     """Collect records from a Regix logger, whatever the global logging state.
@@ -118,12 +133,12 @@ def test_deep_override_preserves_the_rest():
 # --------------------------------------------------------------------------- #
 def test_automatic_metric_choice():
     from regix.config import Metric, StageConfig, TransformType
-    from regix.registration.params import ParamContext, resolve_metric
+    from regix.registration.params import resolve_metric
 
     stage = StageConfig(type=TransformType.RIGID)
-    monomodal = ParamContext(fixed_modality="CT", moving_modality="CT")
-    multimodal = ParamContext(fixed_modality="CT", moving_modality="MR")
-    with_features = ParamContext(
+    monomodal = _param_context(fixed_modality="CT", moving_modality="CT")
+    multimodal = _param_context(fixed_modality="CT", moving_modality="MR")
+    with_features = _param_context(
         fixed_modality="CT", moving_modality="MR", features_available=True, n_channels=4
     )
     assert resolve_metric(stage, monomodal) is Metric.NCC
@@ -133,10 +148,10 @@ def test_automatic_metric_choice():
 
 def test_multi_channel_yields_one_entry_per_metric():
     from regix.config import Metric, StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
     stage = StageConfig(type=TransformType.AFFINE, metric=Metric.FEATURES_NCC)
-    ctx = ParamContext(n_channels=4, features_available=True)
+    ctx = _param_context(n_channels=4, features_available=True)
     pmap = build_parameter_map(stage, ctx)
     assert pmap["Registration"] == ("MultiMetricMultiResolutionRegistration",)
     for key in ("Metric", "FixedImagePyramid", "MovingImagePyramid", "Interpolator", "ImageSampler"):
@@ -147,10 +162,10 @@ def test_multi_channel_yields_one_entry_per_metric():
 
 def test_bspline_adds_the_bending_energy_penalty():
     from regix.config import StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
     stage = StageConfig(type=TransformType.BSPLINE, n_resolutions=3, final_grid_spacing_mm=15.0)
-    pmap = build_parameter_map(stage, ParamContext())
+    pmap = build_parameter_map(stage, _param_context())
     assert "TransformBendingEnergyPenalty" in pmap["Metric"]
     assert pmap["FinalGridSpacingInPhysicalUnits"] == ("15.0000",) * 3
     assert pmap["GridSpacingSchedule"] == ("4.0000", "2.0000", "1.0000")
@@ -159,10 +174,10 @@ def test_bspline_adds_the_bending_energy_penalty():
 
 def test_direction_cosines_are_always_enabled():
     from regix.config import StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
     for transform in TransformType:
-        pmap = build_parameter_map(StageConfig(type=transform), ParamContext())
+        pmap = build_parameter_map(StageConfig(type=transform), _param_context())
         assert pmap["UseDirectionCosines"] == ("true",)
         assert pmap["HowToCombineTransforms"] == ("Compose",)
 
@@ -170,13 +185,12 @@ def test_direction_cosines_are_always_enabled():
 def test_parameter_file_round_trip(tmp_path):
     from regix.config import StageConfig, TransformType
     from regix.registration.params import (
-        ParamContext,
         build_parameter_map,
         read_parameter_file,
         write_parameter_file,
     )
 
-    pmap = build_parameter_map(StageConfig(type=TransformType.RIGID), ParamContext())
+    pmap = build_parameter_map(StageConfig(type=TransformType.RIGID), _param_context())
     path = write_parameter_file(pmap, tmp_path / "p.txt")
     reloaded = read_parameter_file(path)
     assert reloaded["Transform"] == ("EulerTransform",)
@@ -192,24 +206,24 @@ def test_valid_sample_ratio_is_permissive():
     abdominal MR), so this parameter must stay low.
     """
     from regix.config import StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
-    pmap = build_parameter_map(StageConfig(type=TransformType.RIGID), ParamContext())
+    pmap = build_parameter_map(StageConfig(type=TransformType.RIGID), _param_context())
     assert "RequiredRatioOfValidSamples" in pmap
     assert float(pmap["RequiredRatioOfValidSamples"][0]) <= 0.1
 
     strict = build_parameter_map(
-        StageConfig(type=TransformType.RIGID, required_ratio_valid_samples=0.5), ParamContext()
+        StageConfig(type=TransformType.RIGID, required_ratio_valid_samples=0.5), _param_context()
     )
     assert float(strict["RequiredRatioOfValidSamples"][0]) == 0.5
 
 
 def test_user_override_has_the_final_say():
     from regix.config import StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
     stage = StageConfig(type=TransformType.RIGID, extra={"MaximumStepLength": "9.5"})
-    pmap = build_parameter_map(stage, ParamContext())
+    pmap = build_parameter_map(stage, _param_context())
     assert pmap["MaximumStepLength"] == ("9.5",)
 
 
@@ -251,9 +265,9 @@ def _zoo_stage(tmp_path, **kwargs):
 
 def test_a_zoo_parameter_file_is_used_verbatim(tmp_path):
     """The point of accepting these files is that they are honoured, not reinterpreted."""
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
-    pmap = build_parameter_map(_zoo_stage(tmp_path), ParamContext())
+    pmap = build_parameter_map(_zoo_stage(tmp_path), _param_context())
 
     # Everything the file tunes survives, including values Regix would never generate.
     assert pmap["Optimizer"] == ("StandardGradientDescent",)
@@ -277,11 +291,10 @@ def test_a_zoo_file_cannot_break_the_geometry_or_the_transform_chain(tmp_path):
     """
     from regix.registration.params import (
         ENFORCED_WITH_PARAMETER_FILE,
-        ParamContext,
         build_parameter_map,
     )
 
-    pmap = build_parameter_map(_zoo_stage(tmp_path), ParamContext())
+    pmap = build_parameter_map(_zoo_stage(tmp_path), _param_context())
     for key, value in ENFORCED_WITH_PARAMETER_FILE.items():
         assert pmap[key] == value, key
     assert pmap["HowToCombineTransforms"] == ("Compose",)  # the file said "Add"
@@ -322,13 +335,13 @@ def test_a_real_zoo_file_keeps_its_own_internal_pixel_type():
     reaches elastix as a Hounsfield unit and the file's declaration holds.
     """
     from regix.config import StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
     raw = _REAL_ZOO_FILE.read_text(encoding="utf-8")
     assert '(FixedInternalImagePixelType "short")' in raw, "fixture no longer covers the case"
 
     stage = StageConfig(type=TransformType.AFFINE, parameter_file=_REAL_ZOO_FILE)
-    pmap = build_parameter_map(stage, ParamContext(intensity_range=(-1024.0, 1641.0)))
+    pmap = build_parameter_map(stage, _param_context(intensity_range=(-1024.0, 1641.0)))
     assert pmap["FixedInternalImagePixelType"] == ("short",)
     assert pmap["MovingInternalImagePixelType"] == ("short",)
 
@@ -341,30 +354,30 @@ def test_an_integer_pixel_type_on_rescaled_data_is_reported():
     meaningless -- silently, because elastix reports success.
     """
     from regix.config import StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
     stage = StageConfig(type=TransformType.AFFINE, parameter_file=_REAL_ZOO_FILE)
 
     with captured_logs("regix.registration.params") as records:
-        build_parameter_map(stage, ParamContext(intensity_range=(0.0, 1.0)))
+        build_parameter_map(stage, _param_context(intensity_range=(0.0, 1.0)))
     assert any("quantis" in r.getMessage() or "distinct values" in r.getMessage() for r in records), (
         "an integer pixel type on [0, 1] data must be reported"
     )
 
     # ... and stays quiet on native intensities, which is the normal case.
     with captured_logs("regix.registration.params") as records:
-        build_parameter_map(stage, ParamContext(intensity_range=(-1024.0, 3071.0)))
+        build_parameter_map(stage, _param_context(intensity_range=(-1024.0, 3071.0)))
     assert not any("distinct values" in r.getMessage() for r in records)
 
 
 def test_a_real_zoo_file_keeps_its_own_tuning():
     """Everything that is a genuine tuning choice survives, and the rest is reported."""
     from regix.config import StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
     stage = StageConfig(type=TransformType.AFFINE, parameter_file=_REAL_ZOO_FILE)
     with captured_logs("regix.registration.params") as records:
-        pmap = build_parameter_map(stage, ParamContext(dimension=3))
+        pmap = build_parameter_map(stage, _param_context(dimension=3))
 
     # The file's own choices, none of which Regix would generate.
     assert pmap["Optimizer"] == ("StandardGradientDescent",)
@@ -389,22 +402,22 @@ def test_a_real_zoo_file_keeps_its_own_tuning():
 def test_extra_accepts_a_numeric_list():
     """YAML parses `[8, 8, 8]` as ints; refusing them was a pointless papercut."""
     from regix.config import StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
     stage = StageConfig(
         type=TransformType.RIGID,
         n_resolutions=2,  # 2 resolutions x 3 dimensions = the 6 values below
         extra={"ImagePyramidSchedule": [8, 8, 8, 1, 1, 1]},
     )
-    pmap = build_parameter_map(stage, ParamContext(dimension=3))
+    pmap = build_parameter_map(stage, _param_context(dimension=3))
     assert pmap["ImagePyramidSchedule"] == ("8", "8", "8", "1", "1", "1")
 
 
 def test_extra_still_overrides_a_parameter_file(tmp_path):
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
     stage = _zoo_stage(tmp_path, extra={"MaximumNumberOfIterations": 42})
-    pmap = build_parameter_map(stage, ParamContext())
+    pmap = build_parameter_map(stage, _param_context())
     assert pmap["MaximumNumberOfIterations"] == ("42",)
 
 
@@ -416,16 +429,16 @@ def test_a_parameter_file_must_agree_with_the_declared_stage_type(tmp_path):
     field as a 4x4 matrix -- and report a plausible one.
     """
     from regix.config import TransformType
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
     stage = _zoo_stage(tmp_path, type=TransformType.AFFINE)
     with pytest.raises(ValueError, match="BSplineTransform"):
-        build_parameter_map(stage, ParamContext())
+        build_parameter_map(stage, _param_context())
 
 
 def test_a_parameter_file_of_the_wrong_dimension_is_refused(tmp_path):
     from regix.config import StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
     path = tmp_path / "twod.txt"
     path.write_text(
@@ -435,26 +448,26 @@ def test_a_parameter_file_of_the_wrong_dimension_is_refused(tmp_path):
     )
     stage = StageConfig(type=TransformType.RIGID, parameter_file=path)
     with pytest.raises(ValueError, match="2"):
-        build_parameter_map(stage, ParamContext(dimension=3))
+        build_parameter_map(stage, _param_context(dimension=3))
 
 
 def test_a_file_that_is_not_an_elastix_parameter_file_is_refused(tmp_path):
     from regix.config import StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map
+    from regix.registration.params import build_parameter_map
 
     path = tmp_path / "notes.txt"
     path.write_text("just some notes about the case\n", encoding="utf-8")
     stage = StageConfig(type=TransformType.RIGID, parameter_file=path)
     with pytest.raises(ValueError, match="no elastix parameter"):
-        build_parameter_map(stage, ParamContext())
+        build_parameter_map(stage, _param_context())
 
 
 def test_a_parameter_file_stage_is_described_from_the_file(tmp_path):
     """The manifest must report what elastix received, not what the config asked for."""
-    from regix.registration.params import ParamContext, build_parameter_map, describe_stage
+    from regix.registration.params import build_parameter_map, describe_stage
 
     stage = _zoo_stage(tmp_path)
-    ctx = ParamContext()
+    ctx = _param_context()
     pmap = build_parameter_map(stage, ctx)
     described = describe_stage(stage, ctx, pmap)
 
@@ -471,10 +484,10 @@ def test_a_parameter_file_stage_is_described_from_the_file(tmp_path):
 def test_describe_stage_reports_the_effective_value_not_the_requested_one():
     """Same guarantee on the generated path, where `extra` is the source of drift."""
     from regix.config import StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map, describe_stage
+    from regix.registration.params import build_parameter_map, describe_stage
 
     stage = StageConfig(type=TransformType.RIGID, n_resolutions=4, extra={"NumberOfResolutions": 2})
-    ctx = ParamContext()
+    ctx = _param_context()
     described = describe_stage(stage, ctx, build_parameter_map(stage, ctx))
     assert described["resolutions"] == 2, "the manifest reported the request, not the run"
 
@@ -490,10 +503,10 @@ def test_elastix_engine_is_available():
 def test_image_count_required_by_elastix():
     """A penalty is a metric without an image: the image count must follow."""
     from regix.config import Metric, StageConfig, TransformType
-    from regix.registration.params import ParamContext, build_parameter_map, required_image_count
+    from regix.registration.params import build_parameter_map, required_image_count
 
-    ctx_mono = ParamContext(n_channels=1)
-    ctx_multi = ParamContext(n_channels=4, features_available=True)
+    ctx_mono = _param_context(n_channels=1)
+    ctx_multi = _param_context(n_channels=4, features_available=True)
 
     rigid = build_parameter_map(StageConfig(type=TransformType.RIGID), ctx_mono)
     assert required_image_count(rigid) == 1

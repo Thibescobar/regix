@@ -44,7 +44,8 @@ from regix.preprocess.geometry import (
     resample_to_spacing,
 )
 from regix.qc.metrics import normalized_cross_correlation, normalized_mutual_information
-from regix.registration.transforms import decompose_affine, to_matrix_4x4
+from regix.registration.params import same_modality
+from regix.registration.transforms import decompose_affine, load_any_transform, to_matrix_4x4
 
 log = get_logger("registration.init")
 
@@ -148,7 +149,7 @@ def organ_moments_init(
     wanted = [o for o in targets] or fixed_seg.organs
     chosen = None
     for organ in wanted:
-        if fixed_seg.label_of(organ) is not None and moving_seg.label_of(organ) is not None:
+        if fixed_seg.labels_of(organ) and moving_seg.labels_of(organ):
             chosen = organ
             break
     if chosen is None:
@@ -156,6 +157,25 @@ def organ_moments_init(
 
     c_f, V_f, len_f = principal_axes(fixed_seg.mask_for([chosen]))
     c_m, V_m, len_m = principal_axes(moving_seg.mask_for([chosen]))
+
+    separation_f = len_f[:-1] / np.maximum(len_f[1:], 1e-6)
+    separation_m = len_m[:-1] / np.maximum(len_m[1:], 1e-6)
+    if np.any(separation_f < 1.10) or np.any(separation_m < 1.10):
+        centroid, info = organ_centroid_init(fixed_seg, moving_seg, [chosen])
+        affine = sitk.AffineTransform(3)
+        affine.SetCenter(centroid.GetCenter())
+        affine.SetMatrix(centroid.GetMatrix())
+        affine.SetTranslation(centroid.GetTranslation())
+        info.update(
+            {
+                "fallback": "organ_centroid",
+                "reason": "principal axes are quasi-degenerate",
+                "fixed_axis_separation": [round(float(v), 3) for v in separation_f],
+                "moving_axis_separation": [round(float(v), 3) for v in separation_m],
+            }
+        )
+        log.warning("%s axes are quasi-degenerate: using centroid initialization", chosen)
+        return affine, info
 
     for axis in range(3):
         if float(np.dot(V_f[:, axis], V_m[:, axis])) < 0:
@@ -284,16 +304,24 @@ def build_candidates(
             elif mode is InitMode.FILE:
                 if config.transform_file is None:
                     raise ValueError("init.mode=file without transform_file")
-                t = sitk.ReadTransform(str(config.transform_file))
+                t = load_any_transform(config.transform_file)
                 candidates.append(InitCandidate("file", t, info={"path": str(config.transform_file)}))
             else:  # pragma: no cover
                 raise ValueError(f"unhandled initialization mode: {mode}")
         except Exception as exc:
+            if config.mode is not InitMode.MULTISTART:
+                raise ValueError(f"initialization '{mode.value}' failed: {exc}") from exc
             log.warning("candidate '%s' discarded: %s", mode.value, exc)
 
     if not candidates:
         log.warning("no candidate could be built: falling back to grid-centre alignment")
-        candidates.append(InitCandidate("geometry", geometry_init(fixed, moving)))
+        candidates.append(
+            InitCandidate(
+                "geometry",
+                geometry_init(fixed, moving),
+                info={"fallback": True, "requested": [mode.value for mode in modes]},
+            )
+        )
 
     if config.mode is InitMode.MULTISTART:
         rotated: list[InitCandidate] = []
@@ -345,7 +373,11 @@ def choose_initialization(
     candidates = build_candidates(
         fixed, moving, config, fixed_segmentation, moving_segmentation, targets, fixed_mask, moving_mask
     )
-    report: dict[str, Any] = {"mode": config.mode.value, "n_candidates": len(candidates)}
+    report: dict[str, Any] = {
+        "mode": config.mode.value,
+        "requested": config.mode.value,
+        "n_candidates": len(candidates),
+    }
 
     if len(candidates) == 1:
         chosen = candidates[0]
@@ -356,18 +388,24 @@ def choose_initialization(
     coarse_fixed = _coarse(fixed.image, scoring_spacing_mm)
     coarse_moving = _coarse(moving.image, scoring_spacing_mm)
     coarse_mask = resample_like(fixed_mask, coarse_fixed, is_mask=True) if fixed_mask is not None else None
+    scoring_metric = "ncc" if same_modality(fixed.modality, moving.modality) else "nmi"
+    report["scoring_metric"] = scoring_metric
 
     for cand in candidates:
         try:
-            cand.score = score_candidate(coarse_fixed, coarse_moving, cand.transform, coarse_mask)
+            cand.score = score_candidate(
+                coarse_fixed,
+                coarse_moving,
+                cand.transform,
+                coarse_mask,
+                metric=scoring_metric,
+            )
         except Exception as exc:
             log.warning("could not score '%s': %s", cand.name, exc)
             cand.score = float("-inf")
         log.debug("candidate %-32s score=%.4f", cand.name, cand.score)
 
-    ranked = sorted(
-        candidates, key=lambda c: (c.score if c.score is not None else float("-inf")), reverse=True
-    )
+    ranked = sorted(candidates, key=lambda c: c.score if c.score is not None else float("-inf"), reverse=True)
     chosen = ranked[0]
     report["candidates"] = [c.summary() for c in ranked]
     report["chosen"] = chosen.name

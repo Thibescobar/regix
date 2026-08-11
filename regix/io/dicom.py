@@ -8,11 +8,16 @@ What this module handles, because it happens all the time in production:
 * incomplete series / duplicate InstanceNumbers;
 * gantry tilt (head CT) -> reported;
 * PET: reminds the caller that the values are not SUV;
-* patient metadata never copied verbatim into the outputs.
+* deterministic global ordering even when one UID spans several directories.
+
+Reading is deliberately separate from export privacy: a derived DICOM series preserves
+patient/study identity so it remains usable in the source imaging system, while logs,
+manifests and reports pseudonymise identifiers and redact paths.
 """
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,6 +49,8 @@ class DicomSeries:
     rows: int | None = None
     columns: int | None = None
     acquisition_date: str | None = None
+    source_directories: tuple[Path, ...] = ()
+    discovery_warnings: tuple[str, ...] = ()
 
     @property
     def n_files(self) -> int:
@@ -62,34 +69,139 @@ class DicomSeries:
         }
 
 
-def list_series(directory: str | Path, recursive: bool = True) -> list[DicomSeries]:
-    """Inventory the DICOM series, sorted by decreasing slice count."""
+def list_series(
+    directory: str | Path,
+    recursive: bool = True,
+    max_depth: int = 4,
+) -> list[DicomSeries]:
+    """Inventory DICOM series, merging one UID across directories and sorting globally."""
     d = Path(directory)
     if not d.is_dir():
         raise NotADirectoryError(d)
+    if max_depth < 0:
+        raise ValueError("max_depth must be non-negative")
 
     reader = sitk.ImageSeriesReader()
-    found: list[DicomSeries] = []
-    directories = [d] + ([p for p in d.rglob("*") if p.is_dir()] if recursive else [])
-    seen_uids: set[str] = set()
-
-    for sub in directories:
+    by_uid: dict[str, list[str]] = defaultdict(list)
+    uid_directories: dict[str, set[Path]] = defaultdict(set)
+    queue = deque([(d, 0)])
+    scanned = 0
+    while queue:
+        sub, depth = queue.popleft()
         try:
-            uids = reader.GetGDCMSeriesIDs(str(sub))
+            entries = sorted(sub.iterdir(), key=lambda path: path.name)
+        except OSError as exc:
+            log.debug("cannot inspect DICOM directory %s: %s", sub, exc)
+            continue
+        files_here = any(entry.is_file() for entry in entries)
+        if recursive and depth < max_depth:
+            queue.extend((entry, depth + 1) for entry in entries if entry.is_dir() and not entry.is_symlink())
+        if not files_here:
+            continue
+        scanned += 1
+        try:
+            uids = reader.GetGDCMSeriesIDs(str(sub)) or []
         except Exception as exc:  # pragma: no cover
             log.debug("GDCM failed on %s: %s", sub, exc)
             continue
         for uid in uids:
-            if uid in seen_uids:
-                continue
             files = reader.GetGDCMSeriesFileNames(str(sub), uid)
             if not files:
                 continue
-            seen_uids.add(uid)
-            found.append(_probe_series(uid, sub, list(files)))
+            by_uid[uid].extend(str(path) for path in files)
+            uid_directories[uid].add(sub)
 
-    found.sort(key=lambda s: s.n_files, reverse=True)
+    found: list[DicomSeries] = []
+    for uid, files in by_uid.items():
+        ordered, ordering_warnings = _sort_series_files(files)
+        series = _probe_series(uid, d, ordered)
+        series.discovery_warnings = tuple(ordering_warnings)
+        series.source_directories = tuple(sorted(uid_directories[uid], key=str))
+        if len(series.source_directories) > 1:
+            log.warning(
+                "DICOM series %s spans %d directories; merged and globally sorted %d slices",
+                uid,
+                len(series.source_directories),
+                len(ordered),
+            )
+        found.append(series)
+
+    found.sort(key=lambda s: (-s.n_files, s.acquisition_date or "", s.series_uid))
+    log.debug("DICOM discovery visited %d directories containing files", scanned)
     return found
+
+
+def _sort_series_files(files: list[str]) -> tuple[list[str], list[str]]:
+    """Deduplicate SOP instances and sort slices in patient space across directories."""
+    try:
+        import pydicom
+    except ImportError:  # pragma: no cover - pydicom is a core dependency
+        return sorted(set(files)), []
+
+    records: list[tuple[float | None, int, str, str]] = []
+    seen_instances: set[str] = set()
+    instance_numbers: dict[int, str] = {}
+    warnings: list[str] = []
+    for filename in sorted(set(files)):
+        try:
+            ds = pydicom.dcmread(
+                filename,
+                stop_before_pixels=True,
+                force=True,
+                specific_tags=[
+                    "SOPInstanceUID",
+                    "ImagePositionPatient",
+                    "ImageOrientationPatient",
+                    "InstanceNumber",
+                ],
+            )
+            sop_uid = str(getattr(ds, "SOPInstanceUID", filename))
+            if sop_uid in seen_instances:
+                warnings.append(f"duplicate SOPInstanceUID {sop_uid} ignored")
+                continue
+            seen_instances.add(sop_uid)
+            projection = None
+            if hasattr(ds, "ImagePositionPatient") and hasattr(ds, "ImageOrientationPatient"):
+                orientation = np.asarray(ds.ImageOrientationPatient, dtype=float)
+                normal = np.cross(orientation[:3], orientation[3:])
+                projection = float(np.dot(np.asarray(ds.ImagePositionPatient, dtype=float), normal))
+            instance = int(getattr(ds, "InstanceNumber", 0) or 0)
+            if instance > 0 and instance in instance_numbers:
+                warnings.append(
+                    f"duplicate InstanceNumber {instance} for distinct SOP instances; "
+                    "physical position determines ordering"
+                )
+            elif instance > 0:
+                instance_numbers[instance] = sop_uid
+            records.append((projection, instance, sop_uid, filename))
+        except Exception as exc:
+            log.debug("could not sort DICOM instance %s: %s", filename, exc)
+            records.append((None, 0, filename, filename))
+
+    positive_instances = sorted(instance_numbers)
+    if positive_instances:
+        expected = set(range(positive_instances[0], positive_instances[-1] + 1))
+        missing = sorted(expected - set(positive_instances))
+        if missing:
+            preview = ", ".join(str(value) for value in missing[:8])
+            suffix = "..." if len(missing) > 8 else ""
+            warnings.append(f"InstanceNumber sequence has gaps: {preview}{suffix}")
+
+    ordered = [
+        record[3]
+        for record in sorted(
+            records,
+            key=lambda record: (
+                record[0] is None,
+                record[0] if record[0] is not None else 0.0,
+                record[1],
+                record[2],
+            ),
+        )
+    ]
+    for warning in dict.fromkeys(warnings):
+        log.warning("DICOM ordering: %s", warning)
+    return ordered, list(dict.fromkeys(warnings))
 
 
 def _probe_series(uid: str, directory: Path, files: list[str]) -> DicomSeries:
@@ -169,7 +281,7 @@ def load_series(
     reader.LoadPrivateTagsOff()
     image = reader.Execute()
 
-    warnings: list[str] = []
+    warnings: list[str] = list(series.discovery_warnings)
     spacing_report = _check_slice_regularity(reader, series)
     if spacing_report.get("irregular"):
         warnings.append(
@@ -207,6 +319,7 @@ def load_series(
             "acquisition_date": series.acquisition_date,
             "slice_spacing": spacing_report,
             "warnings": warnings,
+            "source_directories": len(series.source_directories) or 1,
         },
     )
 

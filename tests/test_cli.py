@@ -56,6 +56,7 @@ def _run(*args: str):
 # --------------------------------------------------------------------------- #
 def test_version_and_help():
     assert "regix" in _run("version").output
+    assert json.loads(_run("version", "--json").output)["regix"]
     output = _run("--help").output
     for command in ("register", "batch", "apply", "segment", "inspect", "presets", "doctor"):
         assert command in output, f"command {command} is missing from the help"
@@ -69,6 +70,11 @@ def test_doctor_reports_the_engine():
     assert "SimpleITK" in result.output
     # It reports consequences, not just presence: that is the point of the command.
     assert "blocking" in result.output
+    machine = runner.invoke(app, ["doctor", "--json"])
+    assert machine.exit_code == 0, machine.output
+    payload = json.loads(machine.output)
+    assert payload["engine_available"] is True
+    assert payload["itk_elastix"]
 
 
 def test_presets_listing_and_detail():
@@ -122,12 +128,12 @@ def test_register_writes_every_expected_output(tmp_path, phantom_pair):
         "config_effective.yaml",
         "report.html",
         "transform/final_transform.tfm",
-        "transform/final_transform.txt",
+        "transform/final_transform.itk.txt",
     ):
         assert (out / expected).exists(), f"{expected} is missing"
 
     # The transform written must be the one that was measured.
-    transform = sitk.ReadTransform(str(out / "transform" / "final_transform.txt"))
+    transform = sitk.ReadTransform(str(out / "transform" / "final_transform.itk.txt"))
     fixed = sitk.ReadImage(str(paths["fixed"]))
     probe = fixed.TransformContinuousIndexToPhysicalPoint([20.0, 20.0, 18.0])
     error = float(
@@ -219,6 +225,36 @@ def test_invalid_set_is_rejected(tmp_path, phantom_pair):
         ],
     )
     assert result.exit_code != 0, "--set without '=' must be rejected"
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "unknown.branch=1",
+        "stages.not_an_index.max_iterations=5",
+        "stages.999.max_iterations=5",
+        "preprocess.working_spacing_mm=-1",
+    ],
+)
+def test_set_errors_are_user_facing_without_a_traceback(tmp_path, phantom_pair, assignment):
+    paths, _ = phantom_pair
+    result = runner.invoke(
+        app,
+        [
+            "register",
+            str(paths["fixed"]),
+            str(paths["moving"]),
+            "-o",
+            str(tmp_path / "out"),
+            "--dry-run",
+            "--set",
+            assignment,
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert result.exception is not None
 
 
 def test_organ_targets_and_masks_are_forwarded(tmp_path, phantom_pair):
@@ -330,6 +366,21 @@ def test_apply_propagates_a_label_map(tmp_path, phantom_pair):
     values = set(np.unique(sitk.GetArrayViewFromImage(result_image)).tolist())
     assert values <= {0, 1, 2, 3}, f"invented labels: {values}"
 
+    # The Insight .txt written by Regix is just as loadable as the .tfm. The
+    # historical extension-based dispatch confused it with elastix parameters.
+    second = tmp_path / "labels_from_itk_txt.nii.gz"
+    _run(
+        "apply",
+        str(out / "transform" / "final_transform.itk.txt"),
+        str(paths["moving_labels"]),
+        "--reference",
+        str(paths["fixed"]),
+        "-o",
+        str(second),
+        "--label",
+    )
+    assert second.exists()
+
 
 def test_batch_produces_a_summary(tmp_path, phantom_pair):
     paths, _ = phantom_pair
@@ -375,6 +426,60 @@ def test_batch_rejects_a_csv_without_the_required_columns(tmp_path):
     result = runner.invoke(app, ["batch", str(csv_path), "-o", str(tmp_path / "out")])
     assert result.exit_code != 0
     assert "fixed" in result.output or "missing" in result.output.lower()
+
+
+@pytest.mark.parametrize("unsafe_name", ["../escape", "a/b", "a\\b", "/absolute", "CON"])
+def test_batch_rejects_case_names_that_can_escape_the_output(tmp_path, unsafe_name):
+    csv_path = tmp_path / "unsafe.csv"
+    csv_path.write_text(
+        f"fixed,moving,name\nmissing-a,missing-b,{unsafe_name}\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["batch", str(csv_path), "-o", str(tmp_path / "batch")])
+
+    assert result.exit_code != 0
+    assert "invalid case name" in result.output
+    assert not (tmp_path / "escape").exists()
+
+
+def test_qc_command_re_evaluates_stored_measurements_without_registration(tmp_path):
+    from regix.config import RegistrationConfig
+
+    out = tmp_path / "completed"
+    out.mkdir()
+    (out / "config_effective.yaml").write_text(RegistrationConfig().to_yaml(), encoding="utf-8")
+    (out / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "stored-run",
+                "status": "PASS",
+                "metrics": {
+                    "similarity": {"ncc_before": 0.4, "ncc_after": 0.6, "ncc_gain": 0.2},
+                    "organ_overlap": {},
+                    "jacobian": {},
+                    "landmarks": {},
+                },
+                "steps": [],
+                "environment": {},
+                "warnings": [],
+                "degradations": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["qc", str(out), "--set", "qc.gates.min_ncc_gain=0.3", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["status"] == "FAIL"
+    updated = json.loads((out / "run_manifest.json").read_text(encoding="utf-8"))
+    assert updated["status"] == "FAIL"
+    assert updated["qc_recomputations"][-1]["overrides"] == ["qc.gates.min_ncc_gain=0.3"]
+    assert (out / "report.html").exists()
 
 
 def test_qc_failure_exits_with_a_distinct_code(tmp_path):

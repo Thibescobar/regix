@@ -10,7 +10,7 @@ frame into the fixed frame you need the inverse -- which is what
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -92,7 +92,7 @@ def compose(transforms: Sequence[sitk.Transform]) -> sitk.Transform:
     if not valid:
         return sitk.Transform(3, sitk.sitkIdentity)
     if len(valid) == 1:
-        return valid[0]
+        return sitk.Transform(valid[0])
     composite = sitk.CompositeTransform(3)
     for t in reversed(valid):
         composite.AddTransform(t)
@@ -182,11 +182,9 @@ def transform_to_elastix_initial(
     Compositions are first reduced to a single affine: elastix can only chain
     through files, and one file holds one transform.
     """
-    if isinstance(transform, sitk.Euler3DTransform):
-        e = sitk.Euler3DTransform(transform)
-        return write_initial_transform_file(
-            path, "EulerTransform", list(e.GetParameters()), list(e.GetCenter()), fixed_image
-        )
+    # Always serialise a matrix, even for Euler3DTransform. Copying Euler angles would
+    # silently lose the source's ComputeZYX convention (B-11); the affine matrix is
+    # convention-independent and geometrically identical.
     try:
         a = sitk.AffineTransform(transform)
         return write_initial_transform_file(
@@ -343,11 +341,6 @@ def decompose_affine(matrix: np.ndarray) -> dict[str, Any]:
     }
 
 
-def transform_points(transform: sitk.Transform, points: Iterable[Sequence[float]]) -> np.ndarray:
-    """Apply a transform to physical points (mm)."""
-    return np.asarray([transform.TransformPoint([float(v) for v in p]) for p in points], dtype=float)
-
-
 def save_transform(transform: sitk.Transform, path: str | Path) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -355,5 +348,24 @@ def save_transform(transform: sitk.Transform, path: str | Path) -> Path:
     return p
 
 
-def load_transform(path: str | Path) -> sitk.Transform:
-    return sitk.ReadTransform(str(path))
+def load_any_transform(path: str | Path) -> sitk.Transform:
+    """Load a linear transform by content, independent of its filename suffix."""
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"transform file not found: {p}")
+    head = p.read_bytes()[:4096]
+    text = head.decode("utf-8", errors="ignore")
+    if "(Transform " in text and "(TransformParameters " in text:
+        from regix.registration.params import read_parameter_file
+
+        transform = parameter_map_to_transform(read_parameter_file(p))
+        if transform is None:
+            raise ValueError(
+                f"{p} contains an elastix transform that cannot be represented as a "
+                "linear SimpleITK transform"
+            )
+        return transform
+    try:
+        return sitk.ReadTransform(str(p))
+    except RuntimeError as exc:
+        raise ValueError(f"unsupported transform file {p}: {exc}") from exc

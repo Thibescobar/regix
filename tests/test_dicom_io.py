@@ -11,6 +11,9 @@ is genuinely exercised.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+
 import numpy as np
 import pytest
 import SimpleITK as sitk
@@ -144,7 +147,7 @@ def test_patient_identifier_is_pseudonymised(tmp_path):
     volume = load_series(series[0], pseudonymize_ids=True, salt="unit-test")
     assert "DUPONT" not in volume.subject_id
     assert volume.subject_id != "DUPONT-12345"
-    assert len(volume.subject_id) == 10
+    assert len(volume.subject_id) == 32
 
     summary = series[0].summary(pseudonymize_ids=True, salt="unit-test")
     assert summary["subject"] == volume.subject_id
@@ -188,6 +191,39 @@ def test_two_series_in_one_folder_are_separated(tmp_path):
     assert volume.size[2] == 16, "the largest series must be selected"
 
 
+def test_a_series_split_across_directories_is_loaded_whole(tmp_path):
+    from regix.io.dicom import list_series, load_series
+
+    paths, expected = write_ct_series(tmp_path / "staging", n_slices=12)
+    first = tmp_path / "study" / "part_a"
+    second = tmp_path / "study" / "part_b"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    for index, path in enumerate(paths):
+        path.rename((first if index % 2 == 0 else second) / path.name)
+
+    series = list_series(tmp_path / "study")
+
+    assert len(series) == 1
+    assert series[0].series_uid == expected["series_uid"]
+    assert series[0].n_files == 12
+    assert len(series[0].source_directories) == 2
+    assert load_series(series[0]).size[2] == 12
+
+
+def test_a_series_uid_can_be_selected_explicitly(tmp_path):
+    from regix.io.volume import load_volume
+
+    _, first = write_ct_series(tmp_path / "study" / "a", n_slices=5)
+    _, second = write_ct_series(tmp_path / "study" / "b", n_slices=9)
+
+    selected = load_volume(tmp_path / "study", series_uid=first["series_uid"])
+
+    assert selected.series_uid == first["series_uid"]
+    assert selected.size[2] == 5
+    assert selected.series_uid != second["series_uid"]
+
+
 def test_derived_dicom_series_round_trip(tmp_path):
     """The exported series must be re-readable, with the right geometry and new UIDs."""
     from regix.io.dicom import list_series, load_series
@@ -222,6 +258,8 @@ def test_derived_dicom_series_round_trip(tmp_path):
     ds = pydicom.dcmread(str(sorted(out.glob("*.dcm"))[0]))
     assert list(ds.ImageType[:2]) == ["DERIVED", "SECONDARY"]
     assert "not a medical device" in ds.DerivationDescription
+    assert not any(element.tag.is_private for element in ds.iterall())
+    assert "ReferencedImageSequence" not in ds
 
 
 def test_spatial_registration_object_is_valid(tmp_path):
@@ -279,6 +317,43 @@ def test_spatial_registration_object_is_valid(tmp_path):
         .FrameOfReferenceTransformationMatrixType
         == "RIGID"
     )
+    assert len(ds.ReferencedSeriesSequence) == 2
+    assert sum(len(item.ReferencedInstanceSequence) for item in ds.ReferencedSeriesSequence) == 24
+    assert all(len(item.ReferencedImageSequence) == 12 for item in ds.RegistrationSequence)
+    for required_type_2 in (
+        "PatientName",
+        "PatientID",
+        "PatientBirthDate",
+        "PatientSex",
+        "StudyID",
+        "AccessionNumber",
+        "ReferringPhysicianName",
+        "StudyDate",
+        "StudyTime",
+    ):
+        assert required_type_2 in ds
+
+
+def test_spatial_registration_object_passes_dciodvfy_when_available(tmp_path):
+    validator = shutil.which("dciodvfy")
+    if validator is None:
+        pytest.skip("dciodvfy is not installed; structural IOD assertions run in the preceding test")
+
+    from regix.io.writers import write_spatial_registration_dicom
+
+    fixed_paths, _ = write_ct_series(tmp_path / "fixed")
+    moving_paths, _ = write_ct_series(tmp_path / "moving")
+    path = write_spatial_registration_dicom(
+        tmp_path / "reg.dcm",
+        np.eye(4),
+        fixed_paths,
+        moving_paths,
+    )
+
+    result = subprocess.run([validator, str(path)], capture_output=True, text=True)
+    diagnostics = result.stdout + result.stderr
+    assert result.returncode == 0, diagnostics
+    assert "Error" not in diagnostics
 
 
 def test_registration_from_dicom_series_end_to_end(tmp_path):

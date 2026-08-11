@@ -1,11 +1,19 @@
 # Reprise du travail sur un autre poste
 
-Ce fichier existe pour une raison précise : permettre de reprendre l'audit et le plan de
-correction **à partir d'un simple `git clone`**, sans rien de ce qui restait sur la machine
-d'origine. Il décrit l'état exact, ce qu'il faut refaire localement, et ce qui vient
-ensuite.
+> **Clôture du 7 août 2026.** Ce document décrit désormais l'état historique avant
+> correction. Les vagues 1 à 7 ont été appliquées ensemble sur
+> `fix/all-audit-findings`, avec tests de régression et documentation. La matrice
+> constat par constat est dans [`AUDIT_CLOSURE.md`](AUDIT_CLOSURE.md) et les commandes
+> réellement exécutées dans [`VERIFICATION.md`](VERIFICATION.md). Pour reprendre le
+> code corrigé, utiliser l'archive de livraison ou ce commit, et non les instructions
+> de vague ci-dessous.
 
-Dernière mise à jour : **7 août 2026**, fin de la vague 0.
+Ce fichier a servi à reprendre l'audit et le plan de correction **à partir d'un simple
+`git clone`**, sans rien de ce qui restait sur la machine d'origine. Le corps ci-dessous
+est conservé comme photographie reproductible de l'avant-correction ; il ne décrit plus
+la marche à suivre actuelle.
+
+Dernière mise à jour : **7 août 2026**, clôture des vagues 1 à 7.
 
 ---
 
@@ -15,7 +23,7 @@ Dernière mise à jour : **7 août 2026**, fin de la vague 0.
 |---|---|---|
 | Audit exhaustif — 134 constats | `AUDIT.md`, branche `main` | terminé |
 | Vague 0 — filet de sécurité (tests seuls) | branche `fix/wave-0-safety-net` | terminée, vérifiée |
-| Vagues 1 à 7 — corrections | — | **non commencées** |
+| Vagues 1 à 7 — corrections | `fix/all-audit-findings` | **terminées dans la livraison 0.2.0** |
 
 ```
 main                   7e50115  docs: add the full audit (134 findings, 7 correction waves)
@@ -28,7 +36,8 @@ fix/wave-0-safety-net  2ddccaf  test(wave-0): safety net before touching any beh
 La branche part de `main` **avant** ce fichier ; `HANDOFF.md` n'y est donc pas visible.
 C'est sans importance : on le lit depuis `main`, et la vague 1 partira de la branche.
 
-**La vague 0 n'est pas fusionnée dans `main`, volontairement.** La convention retenue est
+**Dans l'instantané historique, la vague 0 n'était pas fusionnée dans `main`,
+volontairement.** La convention retenue est
 *une branche par vague*, pour que chaque vague reste relisible et réversible seule.
 Fusionner ou non est une décision à prendre, pas un oubli — voir §6.
 
@@ -37,7 +46,7 @@ Fusionner ou non est une décision à prendre, pas un oubli — voir §6.
 1. **Ordre de travail** : vague 0 (filet) puis vague 1 (les 3 Critiques). Le plan complet
    des 7 vagues est en `AUDIT.md` §2, ordonné par dépendances techniques.
 2. **Une branche par vague** : `fix/wave-N-<nom>`.
-3. **Aucun fichier de production n'a été modifié à ce jour.** La vague 0 n'ajoute que des
+3. **À la date de cet instantané, aucun fichier de production n'avait été modifié.** La vague 0 n'ajoute que des
    tests, un paramètre à `conftest.make_phantom` et deux jobs CI. Rien ne peut avoir
    régressé.
 
@@ -157,7 +166,7 @@ pendant la vague 0** : C-02 (le canari a trouvé le chemin), H-07 (le manifeste 
 
 ---
 
-## 5. La suite : vague 1
+## 5. Plan historique de la vague 1 (désormais exécuté)
 
 Objectif : les 3 constats **Critiques** plus B-02. Détail complet en `AUDIT.md` §2,
 vague 1. Contrairement à la vague 0, **celle-ci change le comportement**.

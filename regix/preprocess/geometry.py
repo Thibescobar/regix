@@ -55,7 +55,7 @@ def resample_to_spacing(
     default_value: float | None = None,
     is_mask: bool = False,
 ) -> sitk.Image:
-    """Resample to a target spacing while preserving the physical extent."""
+    """Keep origin/direction and preserve physical extent to within one target voxel."""
     target = (float(spacing),) * 3 if np.isscalar(spacing) else tuple(float(s) for s in spacing)  # type: ignore[arg-type]
     src_spacing = np.asarray(image.GetSpacing(), dtype=float)
     src_size = np.asarray(image.GetSize(), dtype=float)
@@ -65,7 +65,7 @@ def resample_to_spacing(
     new_size = np.maximum(1, np.round(src_size * src_spacing / np.asarray(target))).astype(int)
     interp = sitk.sitkNearestNeighbor if is_mask else interpolator_by_name(interpolator)
     if default_value is None:
-        default_value = 0.0 if is_mask else _background_value(image)
+        default_value = 0.0 if is_mask else background_value(image)
 
     out = sitk.Resample(
         image,
@@ -104,7 +104,7 @@ def resample_like(
     """
     interp = sitk.sitkNearestNeighbor if is_mask else interpolator_by_name(interpolator)
     if default_value is None:
-        default_value = 0.0 if is_mask else _background_value(image)
+        default_value = 0.0 if is_mask else background_value(image)
     return sitk.Resample(
         image,
         reference,
@@ -115,12 +115,17 @@ def resample_like(
     )
 
 
-def _background_value(image: sitk.Image) -> float:
+def intensity_range(image: sitk.Image) -> tuple[float, float]:
+    """Exact minimum/maximum without materialising a NumPy volume copy."""
+    filt = sitk.MinimumMaximumImageFilter()
+    filt.Execute(image)
+    return float(filt.GetMinimum()), float(filt.GetMaximum())
+
+
+def background_value(image: sitk.Image) -> float:
     """Out-of-field fill value: the image minimum (air in CT, 0 otherwise)."""
     try:
-        f = sitk.MinimumMaximumImageFilter()
-        f.Execute(sitk.Cast(image, sitk.sitkFloat32))
-        return float(f.GetMinimum())
+        return intensity_range(image)[0]
     except Exception:  # pragma: no cover
         return 0.0
 
@@ -153,6 +158,9 @@ def body_mask(
     modality: str = "CT",
     closing_radius_mm: float = 5.0,
     keep_largest: bool = True,
+    hu_threshold: float = -300.0,
+    assume_hu: bool | None = None,
+    calculation_spacing_mm: float | None = 4.0,
 ) -> sitk.Image:
     """Coarse patient mask (excludes air and the table).
 
@@ -160,26 +168,34 @@ def body_mask(
     rigid/affine registration when the fields of view differ (typically whole-body
     CT against abdominal MR).
     """
+    original = image
     img = sitk.Cast(image, sitk.sitkFloat32)
-    if modality.upper() in ("CT", "CBCT"):
-        f = sitk.MinimumMaximumImageFilter()
-        f.Execute(img)
-        # -300 HU separates air from tissue correctly; if the image has already
-        # been normalised, fall back to Otsu.
-        mask = (
-            sitk.BinaryThreshold(img, -300.0, 4000.0, 1, 0)
-            if f.GetMinimum() < -200
-            else sitk.OtsuThreshold(img, 0, 1, 128)
-        )
+    is_ct = modality.upper() in ("CT", "CBCT")
+    use_hu = is_ct if assume_hu is None else bool(assume_hu)
+    if use_hu:
+        # The caller, not an observed minimum after clipping, decides whether the
+        # values are Hounsfield units. This keeps the algorithm stable before and
+        # after a CT window is applied.
+        mask = sitk.BinaryThreshold(img, float(hu_threshold), 4000.0, 1, 0)
     else:
         mask = sitk.OtsuThreshold(img, 0, 1, 128)
 
-    radius = [max(1, int(round(closing_radius_mm / s))) for s in image.GetSpacing()]
+    # Threshold on the native acquisition before reducing the binary mask. Linear
+    # interpolation of intensities at 4 mm moves the Otsu boundary differently in two
+    # otherwise aligned noisy volumes; that small asymmetry is enough to destabilise a
+    # sparse-mask optimiser. The expensive 3-D morphology still runs at 4 mm, while
+    # nearest-neighbour reduction preserves the native foreground decision exactly.
+    if calculation_spacing_mm is not None:
+        mask = resample_to_spacing(mask, calculation_spacing_mm, is_mask=True)
+
+    radius = [max(1, int(round(closing_radius_mm / s))) for s in mask.GetSpacing()]
     mask = sitk.BinaryMorphologicalClosing(mask, radius, sitk.sitkBall)
     mask = sitk.BinaryFillhole(mask)
     if keep_largest:
         mask = keep_largest_component(mask)
-    volume_ml = float(sitk.GetArrayViewFromImage(mask).sum()) * float(np.prod(image.GetSpacing())) / 1000.0
+    if not same_grid(mask, original):
+        mask = resample_like(mask, original, is_mask=True)
+    volume_ml = float(sitk.GetArrayViewFromImage(mask).sum()) * float(np.prod(original.GetSpacing())) / 1000.0
     log.debug("body mask: %.0f mL", volume_ml)
     return sitk.Cast(mask, sitk.sitkUInt8)
 
@@ -199,16 +215,17 @@ def dilate_mask_mm(mask: sitk.Image, millimeters: float) -> sitk.Image:
     """Isotropic dilation in millimetres (the radius is converted per axis)."""
     if millimeters <= 0:
         return sitk.Cast(mask, sitk.sitkUInt8)
-    radius = [max(1, int(round(millimeters / s))) for s in mask.GetSpacing()]
+    radius = [max(0, int(round(millimeters / s))) for s in mask.GetSpacing()]
+    effective = [r * s for r, s in zip(radius, mask.GetSpacing(), strict=True)]
+    if any(v > 1.5 * millimeters for v in effective):
+        log.warning(
+            "requested %.2f mm dilation becomes %s mm on this anisotropic grid",
+            millimeters,
+            [round(v, 2) for v in effective],
+        )
+    log.debug("dilation %.2f mm -> voxel radii %s (%s mm)", millimeters, radius, effective)
     dilated = sitk.BinaryDilate(sitk.Cast(mask, sitk.sitkUInt8), radius, sitk.sitkBall)
     return sitk.Cast(dilated, sitk.sitkUInt8)
-
-
-def erode_mask_mm(mask: sitk.Image, millimeters: float) -> sitk.Image:
-    if millimeters <= 0:
-        return sitk.Cast(mask, sitk.sitkUInt8)
-    radius = [max(1, int(round(millimeters / s))) for s in mask.GetSpacing()]
-    return sitk.Cast(sitk.BinaryErode(sitk.Cast(mask, sitk.sitkUInt8), radius, sitk.sitkBall), sitk.sitkUInt8)
 
 
 def mask_bounding_box_mm(mask: sitk.Image, margin_mm: float = 0.0) -> tuple[list[int], list[int]]:
@@ -216,7 +233,7 @@ def mask_bounding_box_mm(mask: sitk.Image, margin_mm: float = 0.0) -> tuple[list
 
     Returns (start index, size), usable by ``sitk.RegionOfInterest``.
     """
-    m = sitk.Cast(mask, sitk.sitkUInt8)
+    m = sitk.Cast(sitk.Greater(mask, 0), sitk.sitkUInt8)
     stats = sitk.LabelShapeStatisticsImageFilter()
     stats.Execute(m)
     if 1 not in stats.GetLabels():
@@ -240,7 +257,7 @@ def crop_to_mask(
     image: sitk.Image, mask: sitk.Image, margin_mm: float = 20.0
 ) -> tuple[sitk.Image, tuple[list[int], list[int]]]:
     """Crop ``image`` to the mask bounding box. Physical geometry is preserved."""
-    if not _same_grid(image, mask):
+    if not same_grid(image, mask):
         mask = resample_like(mask, image, is_mask=True)
     start, size = mask_bounding_box_mm(mask, margin_mm)
     cropped = sitk.RegionOfInterest(image, size, start)
@@ -248,13 +265,24 @@ def crop_to_mask(
     return cropped, (start, size)
 
 
-def _same_grid(a: sitk.Image, b: sitk.Image, tol: float = 1e-4) -> bool:
+def same_grid(a: sitk.Image, b: sitk.Image, tol: float = 1e-4) -> bool:
     return (
         a.GetSize() == b.GetSize()
         and np.allclose(a.GetSpacing(), b.GetSpacing(), atol=tol)
         and np.allclose(a.GetOrigin(), b.GetOrigin(), atol=tol)
         and np.allclose(a.GetDirection(), b.GetDirection(), atol=tol)
     )
+
+
+def displacement_field_from_transform(
+    transform: sitk.Transform,
+    reference: sitk.Image,
+) -> sitk.Image:
+    """Materialise a transform on ``reference`` as a memory-bounded float32 field."""
+    filt = sitk.TransformToDisplacementFieldFilter()
+    filt.SetReferenceImage(reference)
+    filt.SetOutputPixelType(sitk.sitkVectorFloat32)
+    return filt.Execute(transform)
 
 
 def image_center_physical(image: sitk.Image) -> np.ndarray:
@@ -274,7 +302,7 @@ def center_of_mass_physical(
     """
     arr = sitk.GetArrayFromImage(sitk.Cast(image, sitk.sitkFloat32)).astype(np.float64)
     if mask is not None:
-        if not _same_grid(image, mask):
+        if not same_grid(image, mask):
             mask = resample_like(mask, image, is_mask=True)
         weights = (sitk.GetArrayViewFromImage(mask) > 0).astype(np.float64)
         arr = weights
@@ -305,10 +333,10 @@ def principal_axes(mask: sitk.Image) -> tuple[np.ndarray, np.ndarray, np.ndarray
     idx = np.argwhere(arr > 0)
     if idx.size == 0:
         raise ValueError("empty mask: principal axes undefined")
-    points = np.asarray(
-        [m.TransformContinuousIndexToPhysicalPoint([float(i[2]), float(i[1]), float(i[0])]) for i in idx],
-        dtype=np.float64,
-    )
+    index_xyz = idx[:, ::-1].astype(np.float64, copy=False)
+    scaled = index_xyz * np.asarray(m.GetSpacing(), dtype=np.float64)
+    direction = np.asarray(m.GetDirection(), dtype=np.float64).reshape(3, 3)
+    points = np.asarray(m.GetOrigin(), dtype=np.float64) + scaled @ direction.T
     centroid = points.mean(axis=0)
     centred = points - centroid
     cov = centred.T @ centred / max(1, len(points) - 1)

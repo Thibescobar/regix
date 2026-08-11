@@ -48,6 +48,156 @@ def _transform_error(estimated, truth, reference: sitk.Image, n: int = 200) -> f
     return float(np.mean(errors))
 
 
+def _small_embedded_pair():
+    """Fast deterministic pair for embedded/standalone lifecycle tests."""
+    from regix.io.volume import Volume
+
+    fixed_image, _ = make_phantom("CT", shape=(28, 36, 36), noise=0.5)
+    truth = known_rigid(
+        fixed_image,
+        rotation_deg=(1.0, -1.0, 1.0),
+        translation_mm=(2.0, -1.0, 2.0),
+    )
+    moving_image = warp(fixed_image, truth)
+    return Volume(fixed_image, modality="CT"), Volume(moving_image, modality="CT")
+
+
+def _embedded_config(tmp_path):
+    return _config(
+        tmp_path,
+        preprocess={"working_spacing_mm": 3.5},
+        features={"enabled": False},
+        stages=[
+            {
+                "type": "rigid",
+                "n_resolutions": 1,
+                "max_iterations": 20,
+                "n_spatial_samples": 512,
+            }
+        ],
+        qc={"enabled": True, "report_html": False, "jacobian": False},
+        runtime={"log_level": "ERROR", "threads": 1},
+    )
+
+
+def test_compute_is_numerically_equivalent_and_leaves_no_artifacts(tmp_path):
+    """The embedded lifecycle must only change I/O, never the registration result."""
+    from regix.pipeline import RegistrationPipeline
+
+    fixed, moving = _small_embedded_pair()
+    cfg = _embedded_config(tmp_path)
+    original_config = cfg.model_dump(mode="python")
+
+    standalone = RegistrationPipeline(cfg).run(fixed, moving, tmp_path / "standalone")
+    workspace = tmp_path / "compute-work"
+    workspace.mkdir()
+    embedded = RegistrationPipeline(cfg).compute(fixed, moving, work_dir=workspace)
+
+    assert list(workspace.iterdir()) == []
+    assert embedded.outputs == {}
+    assert embedded.manifest_path is None
+    assert embedded.registered_image is not None
+    assert embedded.applied_transform.capabilities >= {"points", "field", "sitk"}
+    assert "disk-resample" not in embedded.applied_transform.capabilities
+    assert all("transform_parameter_file" not in stage for stage in embedded.stages)
+    assert cfg.model_dump(mode="python") == original_config
+
+    standalone_transform = standalone.applied_transform.as_sitk_transform()
+    embedded_transform = embedded.applied_transform.as_sitk_transform()
+    assert standalone_transform is not None and embedded_transform is not None
+    probes = np.asarray([[0.0, 0.0, 0.0], [10.0, -5.0, 17.0], [-20.0, 8.0, 3.0]])
+    expected = np.asarray([standalone_transform.TransformPoint(p) for p in probes])
+    actual = embedded.applied_transform.transform_points(probes)
+    assert actual is not None
+    assert np.allclose(actual, expected, atol=1e-8)
+    assert np.allclose(
+        sitk.GetArrayViewFromImage(embedded.registered_image),
+        sitk.GetArrayViewFromImage(standalone.registered_image),
+        atol=1e-6,
+    )
+    assert embedded.metrics["similarity"] == standalone.metrics["similarity"]
+
+    # The transform is exercised after TemporaryDirectory has already been removed.
+    replay = embedded.applied_transform.resample(moving.image, fixed.image)
+    assert replay.GetSize() == fixed.image.GetSize()
+
+
+def test_compute_transform_only_skips_restitution_and_qc(tmp_path):
+    from regix import compute
+    from regix.pipeline import RegistrationPipeline
+
+    fixed, moving = _small_embedded_pair()
+    cfg = _embedded_config(tmp_path)
+    workspace = tmp_path / "compute-work"
+    workspace.mkdir()
+
+    result = compute(
+        fixed,
+        moving,
+        cfg,
+        registered_image=False,
+        qc=False,
+        work_dir=workspace,
+    )
+
+    assert result.registered_image is None
+    assert result.status == "NOT_EVALUATED"
+    assert result.qc == {}
+    assert "similarity" not in result.metrics
+    assert list(workspace.iterdir()) == []
+
+    with pytest.raises(ValueError, match="qc=True requires registered_image=True"):
+        RegistrationPipeline(cfg).compute(fixed, moving, registered_image=False, qc=True)
+
+
+def test_compute_cleans_its_workspace_after_failure(tmp_path, monkeypatch):
+    from regix.pipeline import RegistrationPipeline
+
+    fixed, moving = _small_embedded_pair()
+    cfg = _embedded_config(tmp_path)
+    workspace = tmp_path / "compute-work"
+    workspace.mkdir()
+
+    def fail_after_write(_self, _fixed, _moving, out_dir, _manifest, _outputs, _policy):
+        (out_dir / "partial-artifact").write_text("incomplete", encoding="utf-8")
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(RegistrationPipeline, "_run_inner", fail_after_write)
+    with pytest.raises(RuntimeError, match="synthetic failure"):
+        RegistrationPipeline(cfg).compute(fixed, moving, qc=False, work_dir=workspace)
+
+    assert list(workspace.iterdir()) == []
+
+
+def test_detaching_a_file_chain_keeps_its_nonlinear_part(tmp_path, monkeypatch):
+    """A convertible linear prefix must never eclipse a file-backed B-spline tail."""
+    from regix.pipeline import _detach_transform
+    from regix.registration.warp import ElastixAppliedTransform
+
+    parameter_file = tmp_path / "TransformParameters.0.txt"
+    parameter_file.write_text('(Transform "BSplineTransform")\n', encoding="utf-8")
+    linear_prefix = sitk.TranslationTransform(3, (100.0, 0.0, 0.0))
+    applied = ElastixAppliedTransform(
+        parameter_file,
+        work_dir=tmp_path,
+        linear_transform=linear_prefix,
+    )
+    reference = sitk.Image([4, 4, 4], sitk.sitkFloat32)
+    field_array = np.zeros((4, 4, 4, 3), dtype=np.float64)
+    field_array[..., 0] = 2.0
+    complete_field = sitk.GetImageFromArray(field_array, isVector=True)
+    complete_field.CopyInformation(reference)
+
+    def full_chain(*_args, **kwargs):
+        assert kwargs["compute_deformation_field"] is True
+        return reference, complete_field
+
+    monkeypatch.setattr("regix.pipeline.apply_transform", full_chain)
+    detached = _detach_transform(applied, reference)
+
+    assert np.allclose(detached.transform_points(np.asarray([[0.0, 0.0, 0.0]])), [[2.0, 0.0, 0.0]])
+
+
 def test_rigid_recovers_the_ground_truth(tmp_path, rigid_pair):
     """Rigid + affine on a CT-CT pair: expected error well below one voxel."""
     from regix.pipeline import RegistrationPipeline
@@ -70,6 +220,36 @@ def test_rigid_recovers_the_ground_truth(tmp_path, rigid_pair):
     # The output must be on the original grid of the fixed image.
     assert result.registered_image.GetSize() == fixed.GetSize()
     assert np.allclose(result.registered_image.GetSpacing(), fixed.GetSpacing())
+
+
+def test_rigid_recovers_the_ground_truth_on_an_oblique_grid(tmp_path):
+    from regix.pipeline import RegistrationPipeline
+    from tests.conftest import oblique_direction
+
+    fixed, _ = make_phantom(
+        "CT",
+        shape=(40, 48, 48),
+        spacing=(1.2, 1.2, 4.0),
+        direction=oblique_direction((15.0, 8.0, 3.0)),
+        noise=2.0,
+    )
+    truth = known_rigid(
+        fixed,
+        rotation_deg=(2.0, -1.0, 2.0),
+        translation_mm=(3.0, -2.0, 4.0),
+    )
+    moving = warp(fixed, truth)
+    fixed_path = tmp_path / "fixed-oblique.nii.gz"
+    moving_path = tmp_path / "moving-oblique.nii.gz"
+    sitk.WriteImage(fixed, str(fixed_path), True)
+    sitk.WriteImage(moving, str(moving_path), True)
+    cfg = _config(tmp_path, preprocess={"working_spacing_mm": 2.5})
+
+    result = RegistrationPipeline(cfg).run(fixed_path, moving_path, tmp_path / "out")
+
+    estimated = result.applied_transform.as_sitk_transform()
+    assert estimated is not None
+    assert _transform_error(estimated, truth, fixed) < 2.0
 
 
 #: A zoo-shaped rigid parameter file: recursive pyramids, StandardGradientDescent with
@@ -135,6 +315,35 @@ def test_a_zoo_parameter_file_drives_a_real_registration(tmp_path, rigid_pair):
     assert '(UseDirectionCosines "true")' in effective  # absent from the file
     assert '(HowToCombineTransforms "Compose")' in effective  # the file said "Add"
     assert '(WriteResultImage "false")' in effective  # the file said "true"
+
+
+def test_the_quantisation_warning_fires_through_the_full_pipeline(tmp_path, rigid_pair):
+    """The engine must enrich ParamContext with the real post-preprocessing range."""
+    from regix.pipeline import RegistrationPipeline
+
+    paths, _ = rigid_pair
+    zoo = tmp_path / "quantised.rigid.txt"
+    source = _ZOO_RIGID.replace(
+        '(MovingImagePyramid "MovingRecursiveImagePyramid")',
+        '(MovingImagePyramid "MovingRecursiveImagePyramid")\n'
+        '(FixedInternalImagePixelType "short")\n'
+        '(MovingInternalImagePixelType "short")',
+    ).replace("(MaximumNumberOfIterations 200)", "(MaximumNumberOfIterations 1)")
+    zoo.write_text(source, encoding="utf-8")
+    cfg = _config(
+        tmp_path,
+        stages=[{"type": "rigid", "parameter_file": str(zoo)}],
+        preprocess={
+            "working_spacing_mm": 3.0,
+            "fixed": {"normalize": "minmax", "percentile_clip": None},
+            "moving": {"normalize": "minmax", "percentile_clip": None},
+        },
+        qc={"enabled": False, "report_html": False},
+    )
+    result = RegistrationPipeline(cfg).run(paths["fixed"], paths["moving"], tmp_path / "out")
+
+    assert "almost no distinct values" in (tmp_path / "out" / "regix.log").read_text(encoding="utf-8")
+    assert result.status == "NOT_EVALUATED"
 
 
 def test_a_real_zoo_file_registers_correctly(tmp_path, rigid_pair):
@@ -349,7 +558,7 @@ def test_html_report_and_manifest_are_produced(tmp_path, rigid_pair):
     report = result.outputs["report"]
     text = report.read_text(encoding="utf-8")
     assert "<!DOCTYPE html>" in text
-    assert "data:image/png;base64," in text, "figures must be embedded"
+    assert "data:image/webp;base64," in text, "figures must be embedded"
     assert "not a medical device" in text, "the disclaimer must stay visible"
     assert result.manifest_path is not None and result.manifest_path.exists()
 
@@ -362,7 +571,7 @@ def test_html_report_and_manifest_are_produced(tmp_path, rigid_pair):
     # Parameter files must be archived so the run can be replayed.
     transform_dir = result.outputs["transform_dir"]
     assert list(transform_dir.glob("*parameters.txt"))
-    assert list(transform_dir.glob("*TransformParameters.txt"))
+    assert list(transform_dir.glob("*.elastix.txt"))
 
 
 def test_slicer_readable_transforms(tmp_path, rigid_pair):
@@ -372,8 +581,8 @@ def test_slicer_readable_transforms(tmp_path, rigid_pair):
     paths, truth = rigid_pair
     result = RegistrationPipeline(_config(tmp_path)).run(paths["fixed"], paths["moving"], tmp_path / "out")
     transform_dir = result.outputs["transform_dir"]
-    assert (transform_dir / "stage00_rigid.txt").exists()
-    assert (transform_dir / "stage01_affine.txt").exists()
+    assert (transform_dir / "stage00_rigid.itk.txt").exists()
+    assert (transform_dir / "stage01_affine.itk.txt").exists()
     final = result.outputs["transform_slicer"]
 
     body = final.read_text(encoding="utf-8")

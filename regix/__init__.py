@@ -18,7 +18,7 @@ reused by the run manifest, the HTML report, the API and the LICENSE.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 #: The single source of truth for the regulatory statement. The run manifest, the HTML
 #: report, the API description and the LICENSE all carry this exact sentence: one
@@ -40,6 +40,7 @@ __all__ = [
     "RegistrationPipeline",
     "RegistrationResult",
     "register",
+    "compute",
 ]
 
 
@@ -52,7 +53,7 @@ def __getattr__(name: str):  # lazy imports: `import regix` stays instant
         from regix.io.volume import Volume
 
         return Volume
-    if name in ("RegistrationPipeline", "RegistrationResult", "register"):
+    if name in ("RegistrationPipeline", "RegistrationResult", "register", "compute"):
         from regix import pipeline
 
         return getattr(pipeline, name)

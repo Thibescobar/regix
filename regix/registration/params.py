@@ -43,6 +43,7 @@ it -- see ``ENFORCED_WITH_PARAMETER_FILE``.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -125,17 +126,20 @@ _INTEGER_PIXEL_TYPES = frozenset({"short", "unsigned short", "char", "unsigned c
 class ParamContext:
     """What the engine knows at the time the parameters are built."""
 
-    dimension: int = 3
-    n_channels: int = 1
-    working_spacing_mm: float = 2.0
-    has_mask: bool = False
-    fixed_modality: str = "UNKNOWN"
-    moving_modality: str = "UNKNOWN"
-    features_available: bool = False
-    n_voxels: int | None = None
+    # These describe a concrete run and are intentionally required. A plausible-looking
+    # ParamContext() used to disable the quantisation guard silently when one field was
+    # forgotten by an engine call.
+    working_spacing_mm: float
+    fixed_modality: str
+    moving_modality: str
+    n_voxels: int | None
     #: (min, max) of the fixed image as handed to elastix. Only used to detect a
     #: parameter file whose internal pixel type would quantise it away.
-    intensity_range: tuple[float, float] | None = None
+    intensity_range: tuple[float, float] | None
+    dimension: int = 3
+    n_channels: int = 1
+    has_mask: bool = False
+    features_available: bool = False
 
 
 def same_modality(fixed: str | None, moving: str | None) -> bool:
@@ -315,16 +319,16 @@ def _from_parameter_file(stage: StageConfig, ctx: ParamContext) -> ParameterMap:
             '(Key "value") or (Key 3.0) -- is this really an elastix parameter file?'
         )
     for key in ("Transform", "Metric"):
-        if key not in pmap:
-            raise ValueError(f"{path} declares no ({key} ...): not a usable elastix parameter file")
+        _first_value(pmap, key, path)
 
     expected_transform = _TRANSFORM_NAMES[stage.type]
-    if pmap["Transform"][0] != expected_transform:
+    declared_transform = _first_value(pmap, "Transform", path)
+    if declared_transform != expected_transform:
         matching = [
-            name for name, elastix_name in _TRANSFORM_NAMES.items() if elastix_name == pmap["Transform"][0]
+            name for name, elastix_name in _TRANSFORM_NAMES.items() if elastix_name == declared_transform
         ]
         raise ValueError(
-            f'{path.name} declares (Transform "{pmap["Transform"][0]}") but the stage says '
+            f'{path.name} declares (Transform "{declared_transform}") but the stage says '
             f"type: {stage.type.value} (= {expected_transform}). Declare "
             + (f"type: {matching[0].value}" if matching else "a matching stage type")
             + " so that Regix interprets the stage result correctly."
@@ -359,7 +363,7 @@ def _from_parameter_file(stage: StageConfig, ctx: ParamContext) -> ParameterMap:
     for key, value in stage.extra.items():
         pmap[key] = _as_tuple(value)
 
-    _validate(pmap, dimension=ctx.dimension)
+    _validate(pmap, dimension=ctx.dimension, source=path)
     _warn_on_quantisation(pmap, ctx, path.name)
     log.info("stage %s: parameters read from %s (%d keys)", stage.display_name, path.name, len(pmap))
     return pmap
@@ -420,7 +424,21 @@ def _as_tuple(value: Any) -> tuple[str, ...]:
     return (str(value),)
 
 
-def _validate(pmap: ParameterMap, dimension: int | None = None) -> None:
+def _first_value(pmap: ParameterMap, key: str, source: Path | None = None) -> str:
+    values = pmap.get(key)
+    where = f" in {source}" if source is not None else ""
+    if values is None:
+        raise ValueError(f"missing ({key} ...){where}")
+    if not values:
+        raise ValueError(f"({key}) has no value{where}")
+    return values[0]
+
+
+def _validate(
+    pmap: ParameterMap,
+    dimension: int | None = None,
+    source: Path | None = None,
+) -> None:
     """Checks that avoid cryptic elastix messages.
 
     Keys absent from ``pmap`` are treated as "elastix will use its default", which is
@@ -429,8 +447,7 @@ def _validate(pmap: ParameterMap, dimension: int | None = None) -> None:
     themselves need are required either way.
     """
     for key in ("Transform", "Metric", "NumberOfResolutions"):
-        if key not in pmap:
-            raise ValueError(f"the parameter map declares no ({key} ...)")
+        _first_value(pmap, key, source)
 
     n_metrics = len(pmap["Metric"])
     for key in ("FixedImagePyramid", "MovingImagePyramid", "Interpolator", "ImageSampler"):
@@ -446,7 +463,12 @@ def _validate(pmap: ParameterMap, dimension: int | None = None) -> None:
         raise ValueError(
             f"{n_metrics} metrics require MultiMetricMultiResolutionRegistration, not {registration}"
         )
-    n_res = int(pmap["NumberOfResolutions"][0])
+    try:
+        n_res = int(_first_value(pmap, "NumberOfResolutions", source))
+    except ValueError as exc:
+        if "has no value" in str(exc) or "missing" in str(exc):
+            raise
+        raise ValueError(f"invalid NumberOfResolutions{f' in {source}' if source else ''}: {exc}") from exc
     if "GridSpacingSchedule" in pmap and len(pmap["GridSpacingSchedule"]) not in (n_res, n_res * 3):
         raise ValueError(
             f"GridSpacingSchedule has {len(pmap['GridSpacingSchedule'])} values for {n_res} resolutions"
@@ -487,13 +509,18 @@ def to_itk_parameter_object(pmap: ParameterMap):
     return obj
 
 
-def write_parameter_file(pmap: ParameterMap, path: str | Path) -> Path:
+def write_parameter_file(
+    pmap: ParameterMap,
+    path: str | Path,
+    replay_command: str | None = None,
+) -> Path:
     """Write an elastix ``.txt`` parameter file, replayable from the command line."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "// Parameter file generated by Regix.",
-        "// Replay with: elastix -f fixed.nii.gz -m moving.nii.gz -out . -p " + p.name,
+        "// Replay with: "
+        + (replay_command or f"elastix -f fixed.nii.gz -m moving.nii.gz -out . -p {p.name}"),
         "",
     ]
     for key in sorted(pmap):
@@ -507,28 +534,70 @@ def _quote(value: str) -> str:
     text = str(value)
     if text.lower() in ("true", "false"):
         return f'"{text.lower()}"'
-    try:
-        float(text)
+    if re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?", text):
         return text
-    except ValueError:
-        return f'"{text}"'
+    return f'"{text}"'
 
 
 def read_parameter_file(path: str | Path) -> ParameterMap:
-    """Read back an elastix parameter file (supports external overrides)."""
-    pmap: ParameterMap = {}
-    for raw in Path(path).read_text(encoding="utf-8").splitlines():
-        line = raw.split("//")[0].strip()
-        if not line.startswith("(") or not line.endswith(")"):
+    """Read an elastix map, including multiline entries and quoted ``//`` text."""
+    source = Path(path)
+    cleaned = "\n".join(
+        _strip_parameter_comment(line) for line in source.read_text(encoding="utf-8").splitlines()
+    )
+    entries: list[str] = []
+    start: int | None = None
+    in_quotes = False
+    escaped = False
+    for index, character in enumerate(cleaned):
+        if escaped:
+            escaped = False
             continue
-        body = line[1:-1].strip()
+        if character == "\\" and in_quotes:
+            escaped = True
+            continue
+        if character == '"':
+            in_quotes = not in_quotes
+            continue
+        if in_quotes:
+            continue
+        if character == "(" and start is None:
+            start = index + 1
+        elif character == ")" and start is not None:
+            entries.append(cleaned[start:index])
+            start = None
+    if start is not None or in_quotes:
+        raise ValueError(f"unterminated elastix parameter entry in {source}")
+
+    pmap: ParameterMap = {}
+    for body in entries:
+        body = body.strip()
         if not body:
             continue
         parts = _split_values(body)
-        if len(parts) < 1:
+        if not parts:
             continue
+        if parts[0] in pmap:
+            log.warning("%s declares (%s ...) more than once; the last value wins", source, parts[0])
         pmap[parts[0]] = tuple(parts[1:])
     return pmap
+
+
+def _strip_parameter_comment(line: str) -> str:
+    in_quotes = False
+    escaped = False
+    for index, character in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and in_quotes:
+            escaped = True
+            continue
+        if character == '"':
+            in_quotes = not in_quotes
+        elif character == "/" and not in_quotes and index + 1 < len(line) and line[index + 1] == "/":
+            return line[:index]
+    return line
 
 
 def _split_values(body: str) -> list[str]:

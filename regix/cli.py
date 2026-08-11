@@ -17,8 +17,11 @@ Any configuration option can be overridden without editing a YAML file:
 from __future__ import annotations
 
 import csv
+import io
 import json
+import re
 import sys
+from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
@@ -27,13 +30,33 @@ from rich.console import Console
 from rich.table import Table
 
 from regix import __version__
+from regix.config import InitMode, LogLevel, OrganBackend
 
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
+    invoke_without_command=True,
     help="Regix - multimodal / multi-organ registration (research software, not a medical device).",
 )
 console = Console()
+
+
+class SegmentBackend(str, Enum):
+    TOTALSEGMENTATOR = "totalsegmentator"
+
+
+@app.callback()
+def _global_options(
+    show_version: bool = typer.Option(
+        False,
+        "--version",
+        is_eager=True,
+        help="Print the Regix version and exit.",
+    ),
+) -> None:
+    if show_version:
+        typer.echo(f"regix {__version__}")
+        raise typer.Exit()
 
 
 # --------------------------------------------------------------------------- #
@@ -60,20 +83,66 @@ def _apply_sets(config, assignments: list[str]):
         if "=" not in item:
             raise typer.BadParameter(f"--set expects key=value, got: {item!r}")
         key, _, raw = item.partition("=")
-        value = yaml.safe_load(raw)
-        node: Any = data
-        parts = key.split(".")
-        for part in parts[:-1]:
-            node = node[int(part)] if part.isdigit() else node.setdefault(part, {})
-        last = parts[-1]
-        if last.isdigit():
-            node[int(last)] = value
-        else:
-            node[last] = value
-    return RegistrationConfig.model_validate(data)
+        if not key or any(not part for part in key.split(".")):
+            raise typer.BadParameter(f"--set {item!r}: invalid empty path component")
+        try:
+            value = yaml.safe_load(raw)
+            node: Any = data
+            parts = key.split(".")
+            for part in parts[:-1]:
+                if isinstance(node, list):
+                    if not part.isdigit():
+                        raise TypeError(f"expected a non-negative list index, got {part!r}")
+                    index = int(part)
+                    if index >= len(node):
+                        raise IndexError(f"index {index} outside 0..{len(node) - 1}")
+                    node = node[index]
+                elif isinstance(node, dict):
+                    if part not in node:
+                        choices = ", ".join(sorted(str(k) for k in node)[:12])
+                        raise KeyError(f"unknown key {part!r}; available here: {choices}")
+                    node = node[part]
+                else:
+                    raise TypeError(f"cannot descend through {part!r}: value is {type(node).__name__}")
+            last = parts[-1]
+            if isinstance(node, list):
+                if not last.isdigit():
+                    raise TypeError(f"expected a non-negative list index, got {last!r}")
+                index = int(last)
+                if index >= len(node):
+                    raise IndexError(f"index {index} outside 0..{len(node) - 1}")
+                node[index] = value
+            elif isinstance(node, dict):
+                node[last] = value
+            else:
+                raise TypeError(f"cannot assign {last!r}: parent is {type(node).__name__}")
+        except typer.BadParameter:
+            raise
+        except Exception as exc:
+            raise typer.BadParameter(f"--set {item!r}: invalid path or value ({exc})") from exc
+    try:
+        return RegistrationConfig.model_validate(data)
+    except Exception as exc:
+        raise typer.BadParameter(f"invalid --set override: {exc}") from exc
 
 
-def _echo_result(result) -> None:
+def _result_payload(result) -> dict[str, Any]:
+    return {
+        "status": result.status,
+        "seconds": round(float(result.seconds), 3),
+        "metrics": result.metrics,
+        "qc": result.qc,
+        "initialization": result.initialization,
+        "stages": result.stages,
+        "warnings": result.warnings,
+        "outputs": {key: str(path) for key, path in result.outputs.items()},
+    }
+
+
+def _echo_result(result, as_json: bool = False) -> None:
+    if as_json:
+        typer.echo(json.dumps(_result_payload(result), ensure_ascii=False, allow_nan=False))
+        return
     color = {"PASS": "green", "WARN": "yellow", "FAIL": "red"}.get(result.status, "white")
     console.print(f"\n[bold {color}]{result.status}[/] — {result.seconds:.1f} s")
     console.print(result.summary())
@@ -85,73 +154,105 @@ def _echo_result(result) -> None:
 
 # --------------------------------------------------------------------------- #
 @app.command()
-def version() -> None:
+def version(
+    as_json: bool = typer.Option(False, "--json", help="Print strict machine-readable JSON."),
+) -> None:
     """Print the Regix version."""
-    console.print(f"regix {__version__}")
+    if as_json:
+        typer.echo(json.dumps({"regix": __version__}, allow_nan=False))
+    else:
+        console.print(f"regix {__version__}")
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    as_json: bool = typer.Option(False, "--json", help="Print strict machine-readable JSON."),
+) -> None:
     """Check the environment: engine, optional dependencies, GPU."""
-    from regix.logging_utils import environment_report
+    from regix.logging_utils import environment_report, pseudonymization_warning
     from regix.registration.itk_bridge import engine_available
 
     report = environment_report()
+    has_elastix, engine_detail = engine_available()
+    if as_json:
+        report["engine_available"] = has_elastix
+        report["engine_detail"] = engine_detail
+        report["pseudonymization_warning"] = pseudonymization_warning()
+        typer.echo(json.dumps(report, ensure_ascii=False, allow_nan=False, sort_keys=True))
+        if not has_elastix:
+            raise typer.Exit(code=1)
+        return
+
     table = Table(title="Regix environment", show_lines=False)
     table.add_column("component")
+    table.add_column("version / capacity")
     table.add_column("state")
     table.add_column("consequence if missing")
 
-    has_elastix, engine_detail = engine_available()
     table.add_row(
         "itk-elastix (engine)",
-        f"[green]{engine_detail}[/]" if has_elastix else "[red]missing[/]",
+        engine_detail,
+        "[green]ready[/]" if has_elastix else "[red]broken/missing[/]",
         "blocking: this is the registration engine (pip install itk-elastix)",
     )
     table.add_row(
         "SimpleITK",
         f"{report['simpleitk']}",
+        "[green]installed[/]" if report["simpleitk"] else "[red]missing[/]",
         "blocking: DICOM I/O, morphology, transforms",
     )
-    table.add_row("numpy", f"{report['numpy']}", "blocking")
-
-    torch_ok = report["torch"] is not None
     table.add_row(
-        "torch",
-        f"[green]{report['torch']}[/]" if torch_ok else "[yellow]missing[/]",
-        "no anatomix features and no GPU deformable stage (CPU MIND-SSC fallback)",
+        "numpy",
+        str(report["numpy"]),
+        "[green]installed[/]" if report["numpy"] else "[red]missing[/]",
+        "blocking",
     )
+
+    optional = (
+        ("torch", "torch", "no anatomix/ConvexAdam; CPU MIND-SSC remains available"),
+        ("anatomix", "anatomix", "neural features unavailable; MIND-SSC/MI remain available"),
+        ("monai", "monai", "neural sliding-window inference unavailable"),
+        ("TotalSegmentator", "totalsegmentator", "automatic organ segmentation unavailable"),
+    )
+    for label, key, consequence in optional:
+        version_value = report.get(key)
+        table.add_row(
+            label,
+            str(version_value or "—"),
+            "[green]installed[/]" if version_value else "[yellow]optional/missing[/]",
+            consequence,
+        )
     table.add_row(
         "CUDA GPU",
-        f"[green]{report['cuda_device']}[/]" if report["cuda_available"] else "[yellow]no[/]",
-        "anatomix features are very slow on CPU",
+        str(report.get("cuda_device") or "not probed"),
+        "[green]available[/]" if report.get("cuda_available") else "[yellow]not probed/unavailable[/]",
+        "feature execution will probe it without making doctor import torch",
     )
-    try:
-        import anatomix  # noqa: F401
-
-        anatomix_state = "[green]installed[/]"
-    except ImportError:
-        anatomix_state = "[yellow]missing[/]"
     table.add_row(
-        "anatomix",
-        anatomix_state,
-        "feature-based multimodal registration unavailable (MI remains usable)",
+        "pydicom",
+        str(report.get("pydicom") or "—"),
+        "[green]installed[/]" if report.get("pydicom") else "[red]missing[/]",
+        "tag reading and DICOM exports (SRO, derived series)",
     )
-    table.add_row("monai", f"{report['monai'] or '[yellow]missing[/]'}", "sliding-window inference")
-    try:
-        import totalsegmentator  # noqa: F401
-
-        ts_state = "[green]installed[/]"
-    except ImportError:
-        ts_state = "[yellow]missing[/]"
-    table.add_row("TotalSegmentator", ts_state, "automatic organ segmentation")
-    try:
-        import pydicom  # noqa: F401
-
-        dcm_state = "[green]installed[/]"
-    except ImportError:
-        dcm_state = "[red]missing[/]"
-    table.add_row("pydicom", dcm_state, "tag reading and DICOM exports (SRO, derived series)")
+    pseudonym_warning = pseudonymization_warning()
+    table.add_row(
+        "pseudonymisation",
+        str((report.get("configuration") or {}).get("pseudonym_salt_fingerprint", "—")),
+        "[yellow]ephemeral/weak key[/]" if pseudonym_warning else "[green]configured[/]",
+        pseudonym_warning or "stable HMAC pseudonyms",
+    )
+    table.add_row(
+        "available memory",
+        f"{report.get('memory_available_mb')} MB",
+        "[green]reported[/]" if report.get("memory_available_mb") is not None else "[yellow]unknown[/]",
+        "large volumes may otherwise exhaust RAM",
+    )
+    table.add_row(
+        "free disk",
+        f"{report.get('disk_free_mb')} MB",
+        "[green]reported[/]" if report.get("disk_free_mb") is not None else "[yellow]unknown[/]",
+        "replay inputs and DICOM exports require working space",
+    )
 
     console.print(table)
     console.print(
@@ -165,12 +266,19 @@ def doctor() -> None:
 @app.command()
 def presets(
     name: Optional[str] = typer.Argument(None, help="Print the full YAML of one preset."),
+    resolved: bool = typer.Option(
+        False,
+        "--resolved",
+        help="Print the fully merged configuration instead of the commented source YAML.",
+    ),
 ) -> None:
     """List the bundled presets (or print one)."""
-    from regix.config import available_presets, load_preset
+    from regix.config import available_presets, load_preset, preset_source
 
     if name:
-        console.print(load_preset(name).to_yaml())
+        yaml_text = load_preset(name).to_yaml() if resolved else preset_source(name)
+        # YAML is a data stream: Rich markup and line wrapping would corrupt redirected output.
+        typer.echo(yaml_text, nl=not yaml_text.endswith("\n"))
         return
     table = Table(title="Regix presets")
     table.add_column("name")
@@ -247,6 +355,8 @@ def register(
     organ: list[str] = typer.Option([], "--organ", help="Target organ(s) or group. Repeatable."),
     fixed_modality: Optional[str] = typer.Option(None, "--fixed-modality"),
     moving_modality: Optional[str] = typer.Option(None, "--moving-modality"),
+    fixed_series_uid: Optional[str] = typer.Option(None, "--fixed-series-uid"),
+    moving_series_uid: Optional[str] = typer.Option(None, "--moving-series-uid"),
     spacing: Optional[float] = typer.Option(None, "--spacing", help="Working resolution (mm)."),
     rigid_only: bool = typer.Option(False, "--rigid-only", help="Rigid only, no affine, no deformable."),
     deformable: Optional[bool] = typer.Option(
@@ -255,7 +365,7 @@ def register(
     features: Optional[bool] = typer.Option(
         None, "--features/--no-features", help="Force or disable the anatomix features."
     ),
-    organ_backend: Optional[str] = typer.Option(
+    organ_backend: Optional[OrganBackend] = typer.Option(
         None, "--organ-backend", help="none | external | totalsegmentator"
     ),
     fixed_mask: Optional[Path] = typer.Option(None, "--fixed-mask", help="Fixed mask / label map."),
@@ -267,7 +377,7 @@ def register(
         "looks for a sidecar '<mask>.labels.json' and never guesses.",
     ),
     roi_crop: Optional[bool] = typer.Option(None, "--roi-crop/--no-roi-crop"),
-    init: Optional[str] = typer.Option(
+    init: Optional[InitMode] = typer.Option(
         None, "--init", help="identity | geometry | moments | organ_centroid | organ_moments | multistart"
     ),
     landmarks_fixed: Optional[Path] = typer.Option(None, "--landmarks-fixed"),
@@ -275,9 +385,15 @@ def register(
     dicom_out: bool = typer.Option(False, "--dicom-out", help="Also write a derived DICOM series."),
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite a non-empty output directory."),
     threads: Optional[int] = typer.Option(None, "--threads"),
-    log_level: str = typer.Option("INFO", "--log-level"),
+    log_level: LogLevel = typer.Option(LogLevel.INFO, "--log-level"),
+    allow_cpu_features: bool = typer.Option(
+        False,
+        "--allow-cpu-features",
+        help="Allow the anatomix feature extractor on CPU (slow).",
+    ),
     set_: list[str] = typer.Option([], "--set", help="Override dotted.key=value. Repeatable."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the effective configuration and exit."),
+    as_json: bool = typer.Option(False, "--json", help="Emit the final result as strict JSON."),
 ) -> None:
     """Register MOVING onto FIXED and write the resampled image, transform, QC and report."""
     from regix.config import DeformableEngine, OrganBackend, StageConfig, TransformType
@@ -289,12 +405,16 @@ def register(
         overrides["fixed_modality"] = fixed_modality.upper()
     if moving_modality:
         overrides["moving_modality"] = moving_modality.upper()
+    if fixed_series_uid:
+        overrides["fixed_series_uid"] = fixed_series_uid
+    if moving_series_uid:
+        overrides["moving_series_uid"] = moving_series_uid
     if spacing is not None:
         overrides.setdefault("preprocess", {})["working_spacing_mm"] = spacing
     if organ:
         overrides.setdefault("organs", {})["targets"] = list(organ)
     if organ_backend:
-        overrides.setdefault("organs", {})["backend"] = organ_backend
+        overrides.setdefault("organs", {})["backend"] = organ_backend.value
     if fixed_mask or moving_mask:
         organs = overrides.setdefault("organs", {})
         organs.setdefault("backend", OrganBackend.EXTERNAL.value)
@@ -309,8 +429,10 @@ def register(
         overrides.setdefault("organs", {})["roi_crop"] = roi_crop
     if features is not None:
         overrides.setdefault("features", {})["enabled"] = features
+    if allow_cpu_features:
+        overrides.setdefault("features", {})["allow_cpu"] = True
     if init:
-        overrides.setdefault("init", {})["mode"] = init
+        overrides.setdefault("init", {})["mode"] = init.value
     if landmarks_fixed:
         overrides.setdefault("qc", {})["landmarks_fixed"] = str(landmarks_fixed)
     if landmarks_moving:
@@ -321,7 +443,7 @@ def register(
         overrides.setdefault("output", {})["overwrite"] = True
     if threads:
         overrides.setdefault("runtime", {})["threads"] = threads
-    overrides.setdefault("runtime", {})["log_level"] = log_level.upper()
+    overrides.setdefault("runtime", {})["log_level"] = log_level.value
 
     cfg = cfg.with_overrides(**overrides) if overrides else cfg
 
@@ -357,11 +479,11 @@ def register(
     cfg = cfg.model_copy(update={"output": cfg.output.model_copy(update={"dir": output})})
 
     if dry_run:
-        console.print(cfg.to_yaml())
+        typer.echo(cfg.to_yaml(), nl=False)
         return
 
     result = RegistrationPipeline(cfg).run(fixed, moving, output)
-    _echo_result(result)
+    _echo_result(result, as_json=as_json)
     if result.status == "FAIL":
         raise typer.Exit(code=2)
 
@@ -376,13 +498,20 @@ def batch(
     continue_on_error: bool = typer.Option(True, "--continue/--stop-on-error"),
     summary_csv: Optional[Path] = typer.Option(None, "--summary", help="Summary CSV."),
     threads: Optional[int] = typer.Option(None, "--threads"),
-    log_level: str = typer.Option("INFO", "--log-level"),
+    log_level: LogLevel = typer.Option(LogLevel.INFO, "--log-level"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Replace known artifacts of prior cases."),
     set_: list[str] = typer.Option([], "--set", help="Override dotted.key=value. Repeatable."),
+    as_json: bool = typer.Option(False, "--json", help="Emit the batch records as strict JSON."),
 ) -> None:
     """Register a list of pairs and produce a usable summary."""
     from regix.pipeline import RegistrationPipeline
 
-    rows = list(csv.DictReader(pairs.read_text(encoding="utf-8-sig").splitlines()))
+    source = pairs.read_text(encoding="utf-8-sig")
+    try:
+        dialect = csv.Sniffer().sniff(source[:8192], delimiters=",;\t")
+    except csv.Error:
+        dialect = csv.excel
+    rows = list(csv.DictReader(io.StringIO(source), dialect=dialect))
     if not rows:
         console.print("[red]empty CSV[/]")
         raise typer.Exit(code=1)
@@ -391,20 +520,31 @@ def batch(
         raise typer.BadParameter(f"missing columns in the CSV: {missing}")
 
     base = _load_config(preset, config_file)
-    overrides: dict[str, Any] = {"runtime": {"log_level": log_level.upper()}}
+    overrides: dict[str, Any] = {"runtime": {"log_level": log_level.value}}
     if organ:
         overrides["organs"] = {"targets": list(organ)}
     if threads:
         overrides["runtime"]["threads"] = threads
     base = _apply_sets(base.with_overrides(**overrides), list(set_))
 
+    raw_names = [row.get("name") or f"case{index:04d}" for index, row in enumerate(rows, start=1)]
+    names = [_safe_case_name(name) for name in raw_names]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise typer.BadParameter(f"duplicate case names after validation: {', '.join(duplicates)}")
+
     output.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, Any]] = []
-    for index, row in enumerate(rows, start=1):
-        name = row.get("name") or f"case{index:04d}"
+    for index, (row, name) in enumerate(zip(rows, names, strict=True), start=1):
         case_dir = output / name
-        console.rule(f"[{index}/{len(rows)}] {name}")
+        if not as_json:
+            console.rule(f"[{index}/{len(rows)}] {name}")
         cfg = base
+        series_overrides = {
+            key: row[key] for key in ("fixed_series_uid", "moving_series_uid") if row.get(key)
+        }
+        if series_overrides:
+            cfg = cfg.with_overrides(**series_overrides)
         if row.get("fixed_mask") or row.get("moving_mask"):
             organs: dict[str, Any] = {"backend": "external"}
             if row.get("fixed_mask"):
@@ -412,7 +552,7 @@ def batch(
             if row.get("moving_mask"):
                 organs["moving_labelmap"] = row["moving_mask"]
             cfg = cfg.with_overrides(organs=organs)
-        cfg = cfg.with_overrides(output={"overwrite": True})
+        cfg = cfg.with_overrides(output={"overwrite": overwrite})
         try:
             result = RegistrationPipeline(cfg).run(row["fixed"], row["moving"], case_dir)
             similarity = result.metrics.get("similarity", {})
@@ -432,9 +572,11 @@ def batch(
                     "output": str(case_dir),
                 }
             )
-            console.print(f"  -> {result.status}")
+            if not as_json:
+                console.print(f"  -> {result.status}")
         except Exception as exc:
-            console.print(f"  [red]ERROR[/] {type(exc).__name__}: {exc}")
+            if not as_json:
+                console.print(f"  [red]ERROR[/] {type(exc).__name__}: {exc}")
             records.append({"name": name, "status": "ERROR", "error": f"{type(exc).__name__}: {exc}"})
             if not continue_on_error:
                 raise typer.Exit(code=1) from exc
@@ -449,35 +591,64 @@ def batch(
     counts: dict[str, int] = {}
     for record in records:
         counts[record["status"]] = counts.get(record["status"], 0) + 1
-    console.rule("Summary")
-    for status, count in sorted(counts.items()):
-        console.print(f"  {status:6s} {count}")
-    console.print(f"  summary file: {target}")
+    if as_json:
+        typer.echo(json.dumps({"records": records, "counts": counts}, ensure_ascii=False, allow_nan=False))
+    else:
+        console.rule("Summary")
+        for status, count in sorted(counts.items()):
+            console.print(f"  {status:6s} {count}")
+        console.print(f"  summary file: {target}")
     if counts.get("ERROR") or counts.get("FAIL"):
         raise typer.Exit(code=2)
 
 
 @app.command()
 def apply(
-    transform: Path = typer.Argument(..., help="TransformParameters.txt (elastix) or .tfm (ITK)."),
+    transform: Path = typer.Argument(
+        ...,
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="TransformParameters.txt (elastix) or an ITK transform (.tfm/.txt/.h5).",
+    ),
     moving: Path = typer.Argument(..., help="Volume to transform."),
     reference: Path = typer.Option(..., "--reference", "-r", help="Volume defining the output grid."),
     output: Path = typer.Option(Path("warped.nii.gz"), "-o", "--output"),
     label: bool = typer.Option(False, "--label", help="Label map: nearest-neighbour interpolation."),
+    invert: bool = typer.Option(
+        False,
+        "--invert",
+        help="Invert a transform that has an exact inverse before resampling.",
+    ),
 ) -> None:
     """Apply an already computed transform (resume, contour propagation)."""
-    import SimpleITK as sitk
-
     from regix.io.volume import load_volume
     from regix.io.writers import save_image
+    from regix.registration.transforms import load_any_transform
     from regix.registration.warp import ElastixAppliedTransform, SitkAppliedTransform
 
     moving_volume = load_volume(moving, role="labelmap" if label else "image")
     reference_volume = load_volume(reference)
-    if transform.suffix.lower() == ".tfm":
-        applied = SitkAppliedTransform(sitk.ReadTransform(str(transform)))
-    else:
-        applied = ElastixAppliedTransform(transform)
+    head = transform.read_text(encoding="utf-8", errors="replace")[:4096]
+    try:
+        if "(Transform " in head and "(TransformParameters " in head:
+            # A non-linear elastix chain cannot be represented by SimpleITK; transformix
+            # remains the authoritative reader in that case.
+            try:
+                applied = SitkAppliedTransform(load_any_transform(transform))
+            except ValueError:
+                applied = ElastixAppliedTransform(transform)
+        else:
+            applied = SitkAppliedTransform(load_any_transform(transform))
+    except Exception as exc:
+        raise typer.BadParameter(
+            f"could not read transform {transform.name!r}; expected elastix parameters or an ITK transform"
+        ) from exc
+    if invert:
+        transform_value = applied.as_sitk_transform()
+        if transform_value is None or "inverse" not in applied.capabilities:
+            raise typer.BadParameter("this transform has no exact, representable inverse")
+        applied = SitkAppliedTransform(transform_value.GetInverse(), label="inverse")
     warped = applied.resample(
         moving_volume.image, reference_volume.image, is_label=label, default_value=0 if label else None
     )
@@ -488,11 +659,145 @@ def apply(
     )
 
 
+@app.command("qc")
+def recompute_qc(
+    output_dir: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=False,
+        readable=True,
+        help="Completed Regix output directory.",
+    ),
+    set_values: list[str] = typer.Option(
+        [],
+        "--set",
+        help="Override a QC setting, e.g. --set qc.gates.max_tre_mm=3.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the new verdict as JSON."),
+) -> None:
+    """Re-evaluate QC gates and regenerate the report without rerunning registration.
+
+    Image-derived measurements are immutable inputs from ``run_manifest.json``; this
+    command is intended for changing site acceptance thresholds after a completed run.
+    """
+    import time
+
+    import yaml
+
+    from regix.config import RegistrationConfig
+    from regix.layout import EFFECTIVE_CONFIG, MANIFEST, REPORT
+    from regix.logging_utils import setup_logging
+    from regix.qc.gates import evaluate_gates
+    from regix.qc.report import build_html_report
+
+    if as_json:
+        # Machine-readable output must remain one JSON document even when a previous
+        # command in the same process configured the global Regix logger.
+        setup_logging("CRITICAL", quiet=True)
+
+    manifest_path = output_dir / MANIFEST
+    config_path = output_dir / EFFECTIVE_CONFIG
+    if not manifest_path.is_file() or not config_path.is_file():
+        raise typer.BadParameter(
+            f"{output_dir} is not a completed Regix run (missing {MANIFEST} or {EFFECTIVE_CONFIG})"
+        )
+    for assignment in set_values:
+        if not assignment.partition("=")[0].startswith("qc."):
+            raise typer.BadParameter("regix qc only accepts --set qc.* overrides")
+    try:
+        cfg = RegistrationConfig.model_validate(yaml.safe_load(config_path.read_text(encoding="utf-8")) or {})
+        cfg = _apply_sets(cfg, set_values)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except typer.BadParameter:
+        raise
+    except Exception as exc:
+        raise typer.BadParameter(f"could not read the completed run ({exc})") from exc
+
+    metrics = manifest.get("metrics") or {}
+    profile = metrics.get("organ_profile") or {}
+    stage_summaries = next(
+        (step.get("stages", []) for step in manifest.get("steps", []) if step.get("name") == "elastix"),
+        [],
+    )
+    initialization = next(
+        (
+            {key: step[key] for key in ("mode", "requested", "chosen", "n_candidates") if key in step}
+            for step in manifest.get("steps", [])
+            if step.get("name") == "initialization"
+        ),
+        {},
+    )
+    deformable = any(stage.get("transform") == "BSplineTransform" for stage in stage_summaries)
+    gates = cfg.qc.gates
+    expected_motion = profile.get("typical_motion_mm")
+    displacement_advisory = False
+    if gates.max_displacement_ratio is None and expected_motion is not None:
+        gates = gates.model_copy(update={"max_displacement_ratio": 2.5})
+        displacement_advisory = True
+    verdict = evaluate_gates(
+        gates,
+        similarity=metrics.get("similarity"),
+        organ_overlap=metrics.get("organ_overlap"),
+        jacobian=metrics.get("jacobian"),
+        linear_analysis=metrics.get("linear"),
+        landmarks=metrics.get("landmarks"),
+        deformable=deformable,
+        displacement=metrics.get("displacement"),
+        expected_motion_mm=expected_motion,
+        stages=stage_summaries,
+        initialization=initialization,
+        displacement_advisory=displacement_advisory,
+    ).to_dict()
+    manifest["status"] = verdict["status"]
+    metrics["qc"] = verdict
+    manifest["metrics"] = metrics
+    manifest["config"] = cfg.model_dump(mode="json")
+    manifest.setdefault("qc_recomputations", []).append(
+        {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "overrides": list(set_values)}
+    )
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False, allow_nan=False),
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    if cfg.qc.report_html:
+        build_html_report(
+            output_dir / REPORT,
+            {
+                "title": "Regix QC re-evaluation",
+                "subtitle": f"completed run {manifest.get('run_id', 'unknown')}",
+                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "qc": verdict,
+                "similarity": metrics.get("similarity"),
+                "organ_overlap": metrics.get("organ_overlap"),
+                "landmarks": metrics.get("landmarks"),
+                "jacobian": metrics.get("jacobian"),
+                "stages": stage_summaries,
+                "configuration": {"preset": cfg.name, "QC overrides": set_values or "unchanged"},
+                "environment": manifest.get("environment"),
+                "warnings": manifest.get("warnings"),
+                "degradations": manifest.get("degradations"),
+            },
+        )
+    if as_json:
+        typer.echo(json.dumps(verdict, ensure_ascii=False, allow_nan=False))
+    else:
+        console.print(f"[bold]{verdict['status']}[/] — QC gates re-evaluated in {output_dir}")
+
+
 @app.command()
 def segment(
     image: Path = typer.Argument(..., help="CT volume (file or DICOM series)."),
     output: Path = typer.Option(Path("regix_masks"), "-o", "--output"),
+    backend: SegmentBackend = typer.Option(SegmentBackend.TOTALSEGMENTATOR, "--backend"),
     organ: list[str] = typer.Option([], "--organ", help="Restrict to the requested organs."),
+    task: str = typer.Option("auto", "--task", help="auto | total | total_mr"),
+    fast: bool = typer.Option(True, "--fast/--no-fast", help="Use the lower-resolution TS model."),
+    device: str = typer.Option("auto", "--device", help="auto | cuda | cpu"),
+    timeout_seconds: int = typer.Option(1800, "--timeout", min=1, max=86_400),
 ) -> None:
     """Segment the organs with TotalSegmentator and write a label map plus one mask per organ."""
     import SimpleITK as sitk
@@ -504,7 +809,24 @@ def segment(
 
     volume = load_volume(image)
     targets = resolve_targets(list(organ))
-    segmenter = TotalSegmentatorSegmenter(roi_subset=targets or None)
+    if backend is not SegmentBackend.TOTALSEGMENTATOR:  # pragma: no cover - Typer validates this
+        raise typer.BadParameter(f"unsupported segmentation backend: {backend.value}")
+    if task not in {"auto", "total", "total_mr"}:
+        raise typer.BadParameter("--task must be auto, total or total_mr")
+    if device not in {"auto", "cuda", "cpu"}:
+        raise typer.BadParameter("--device must be auto, cuda or cpu")
+    resolved_task = (
+        "total_mr" if task == "auto" and volume.modality == "MR" else ("total" if task == "auto" else task)
+    )
+    if resolved_task == "total" and volume.modality == "MR":
+        raise typer.BadParameter("--task total is CT-only; use total_mr for an MR volume")
+    segmenter = TotalSegmentatorSegmenter(
+        task=resolved_task,
+        fast=fast,
+        roi_subset=targets or None,
+        device=device,
+        timeout_seconds=timeout_seconds,
+    )
 
     seg = segmenter.segment(volume)
     output.mkdir(parents=True, exist_ok=True)
@@ -518,6 +840,37 @@ def segment(
         except ValueError:
             continue
     console.print(f"[green]{len(seg.present_organs())} organs[/] -> {output}")
+
+
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def _safe_case_name(value: str) -> str:
+    """Validate a CSV case name as one portable path component."""
+    name = str(value).strip()
+    if (
+        not name
+        or name in {".", ".."}
+        or len(name) > 100
+        or Path(name).is_absolute()
+        or "/" in name
+        or "\\" in name
+        or ":" in name
+        or name.rstrip(" .") != name
+        or name.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES
+        or not re.fullmatch(r"[\w .-]+", name, flags=re.UNICODE)
+    ):
+        raise typer.BadParameter(
+            f"invalid case name {value!r}: use one portable component (letters, digits, space, _, . or -)"
+        )
+    return name
 
 
 def main() -> None:  # console entry point

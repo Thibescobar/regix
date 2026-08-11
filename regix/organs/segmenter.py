@@ -22,6 +22,7 @@ commercial or clinical use -- Regix redistributes no weights.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import shutil
 import subprocess
 import tempfile
@@ -37,7 +38,7 @@ from regix.config import OrganBackend, OrganConfig
 from regix.io.volume import Volume
 from regix.logging_utils import get_logger
 from regix.organs.labels import canonical_organ_name, resolve_targets
-from regix.preprocess.geometry import resample_like
+from regix.preprocess.geometry import resample_like, same_grid
 
 log = get_logger("organs.segmenter")
 
@@ -55,36 +56,44 @@ class OrganSegmentation:
 
     @property
     def organs(self) -> list[str]:
-        return [self.label_names[k] for k in sorted(self.label_names)]
+        return list(dict.fromkeys(self.label_names[k] for k in sorted(self.label_names)))
 
     def present_organs(self) -> list[str]:
         """Organs actually present (non-empty label): a model can return nothing."""
         arr = sitk.GetArrayViewFromImage(self.labelmap)
         present = set(np.unique(arr).tolist()) - {0}
-        return [self.label_names[k] for k in sorted(self.label_names) if k in present]
+        return list(dict.fromkeys(self.label_names[k] for k in sorted(self.label_names) if k in present))
+
+    def labels_of(self, organ: str) -> list[int]:
+        """All labels carrying the canonical organ name.
+
+        A third-party segmentation may split one organ into several files (for
+        example the two left lung lobes). Treating a name as a single label would
+        silently discard every component after the first one.
+        """
+        key = canonical_organ_name(organ)
+        return [int(value) for value, name in sorted(self.label_names.items()) if name == key]
 
     def label_of(self, organ: str) -> int | None:
-        key = canonical_organ_name(organ)
-        for value, name in self.label_names.items():
-            if name == key:
-                return int(value)
-        return None
+        """First matching label, retained for compatibility; prefer :meth:`labels_of`."""
+        labels = self.labels_of(organ)
+        return labels[0] if labels else None
 
     def mask_for(self, organs: Sequence[str] | None = None, missing: str = "warn") -> sitk.Image:
         """Binary mask of the union of the requested organs (None = all labels)."""
         if organs is None:
             return sitk.Cast(sitk.Greater(self.labelmap, 0), sitk.sitkUInt8)
         wanted = resolve_targets(list(organs))
-        labels = []
+        labels: list[int] = []
         for organ in wanted:
-            lbl = self.label_of(organ)
-            if lbl is None:
+            matches = self.labels_of(organ)
+            if not matches:
                 message = f"organ '{organ}' missing from the {self.backend} segmentation"
                 if missing == "raise":
                     raise KeyError(message)
                 log.warning(message)
             else:
-                labels.append(lbl)
+                labels.extend(matches)
         if not labels:
             raise ValueError(f"none of the organs {wanted} is available ({self.backend})")
         mask = sitk.Cast(sitk.Equal(self.labelmap, labels[0]), sitk.sitkUInt8)
@@ -116,11 +125,23 @@ class OrganSegmenter:
     # -- cache ------------------------------------------------------------- #
     def _cache_key(self, volume: Volume, extra: str = "") -> str:
         h = hashlib.sha256()
-        h.update(f"{self.name}|{extra}|{volume.size}|{volume.spacing}|{volume.origin}".encode())
+        try:
+            backend_version = importlib.metadata.version("TotalSegmentator")
+        except importlib.metadata.PackageNotFoundError:
+            backend_version = "unavailable"
+        try:
+            from regix import __version__
+        except Exception:  # pragma: no cover - defensive during packaging
+            __version__ = "unknown"
+        h.update(
+            f"{self.name}|{backend_version}|regix={__version__}|{extra}|"
+            f"{volume.size}|{volume.spacing}|{volume.origin}|{volume.direction}".encode()
+        )
         arr = sitk.GetArrayViewFromImage(volume.image)
-        # cheap fingerprint: a few slices are enough to distinguish two volumes
-        step = max(1, arr.shape[0] // 8)
-        h.update(np.ascontiguousarray(arr[::step]).tobytes()[: 1 << 20])
+        # Hashing the complete volume costs far less than an inference and avoids
+        # returning another patient's segmentation for two studies sharing the
+        # same geometry and similar sampled slices.
+        h.update(np.ascontiguousarray(arr).tobytes())
         return h.hexdigest()[:16]
 
 
@@ -173,7 +194,7 @@ class ExternalSegmenter(OrganSegmenter):
             source = str(self.directory)
 
         seg = OrganSegmentation(lm, names, self.name, source)
-        if not _same_grid(lm, volume.image):
+        if not same_grid(lm, volume.image):
             log.info("external masks on a different grid: resampling onto the volume")
             seg = seg.resampled_to(volume.image)
         return seg
@@ -191,7 +212,7 @@ class ExternalSegmenter(OrganSegmenter):
             if labelmap is None:
                 labelmap = sitk.Image(m.GetSize(), sitk.sitkUInt16)
                 labelmap.CopyInformation(m)
-            elif not _same_grid(m, labelmap):
+            elif not same_grid(m, labelmap):
                 m = resample_like(m, labelmap, is_mask=True)
             # first come, first served: an already-placed organ is not overwritten
             free = sitk.Equal(labelmap, 0)
@@ -217,12 +238,14 @@ class TotalSegmentatorSegmenter(OrganSegmenter):
         roi_subset: Sequence[str] | None = None,
         device: str = "auto",
         cache_dir: str | Path | None = None,
+        timeout_seconds: int = 1800,
     ):
         self.task = task
         self.fast = fast
         self.roi_subset = list(roi_subset) if roi_subset else None
         self.device = device
         self.cache_dir = Path(cache_dir) if cache_dir else None
+        self.timeout_seconds = int(timeout_seconds)
 
     def segment(self, volume: Volume) -> OrganSegmentation:
         cache = self._cached(volume)
@@ -240,9 +263,9 @@ class TotalSegmentatorSegmenter(OrganSegmenter):
                 names,
                 self.name,
                 source=f"totalsegmentator:{self.task}",
-                info={"task": self.task, "fast": self.fast},
+                info={"task": self.task, "fast": self.fast, "timeout_seconds": self.timeout_seconds},
             )
-            if not _same_grid(lm, volume.image):
+            if not same_grid(lm, volume.image):
                 seg = seg.resampled_to(volume.image)
             self._store(volume, seg)
             return seg
@@ -250,7 +273,9 @@ class TotalSegmentatorSegmenter(OrganSegmenter):
     def _run(self, ct: Path, out: Path) -> None:
         try:
             from totalsegmentator.python_api import totalsegmentator
-
+        except ImportError:
+            totalsegmentator = None
+        if totalsegmentator is not None:
             log.info("TotalSegmentator (Python API), task=%s, fast=%s", self.task, self.fast)
             totalsegmentator(
                 input=str(ct),
@@ -262,8 +287,6 @@ class TotalSegmentatorSegmenter(OrganSegmenter):
                 quiet=True,
             )
             return
-        except ImportError:
-            pass
         exe = shutil.which("TotalSegmentator")
         if exe is None:
             raise RuntimeError(
@@ -276,7 +299,15 @@ class TotalSegmentatorSegmenter(OrganSegmenter):
         if self.roi_subset:
             cmd += ["--roi_subset", *self.roi_subset]
         log.info("TotalSegmentator (CLI): %s", " ".join(cmd))
-        subprocess.run(cmd, check=True)
+        completed = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=self.timeout_seconds,
+        )
+        if completed.stderr:
+            log.debug("TotalSegmentator stderr: %s", completed.stderr[-4000:])
 
     # -- disk cache -------------------------------------------------------- #
     def _cache_path(self, volume: Volume) -> Path | None:
@@ -292,12 +323,19 @@ class TotalSegmentatorSegmenter(OrganSegmenter):
         names_file = p.with_suffix("").with_suffix(".labels.txt")
         if not names_file.exists():
             return None
-        names = {}
-        for line in names_file.read_text(encoding="utf-8").splitlines():
-            idx, _, name = line.partition(" ")
-            names[int(idx)] = name
+        try:
+            names = {}
+            for line in names_file.read_text(encoding="utf-8").splitlines():
+                idx, _, name = line.partition(" ")
+                names[int(idx)] = name
+            labelmap = sitk.ReadImage(str(p))
+            if not same_grid(labelmap, volume.image):
+                raise ValueError("cached geometry does not match the input")
+        except (OSError, ValueError, RuntimeError) as exc:
+            log.warning("invalid segmentation cache %s ignored: %s", p.name, exc)
+            return None
         log.info("segmentation restored from cache: %s", p.name)
-        return OrganSegmentation(sitk.ReadImage(str(p)), names, self.name, source=str(p))
+        return OrganSegmentation(labelmap, names, self.name, source=str(p))
 
     def _store(self, volume: Volume, seg: OrganSegmentation) -> None:
         p = self._cache_path(volume)
@@ -356,7 +394,10 @@ def _sidecar_label_names(labelmap_path: Path) -> dict[int, str] | None:
 
 # --------------------------------------------------------------------------- #
 def build_segmenter(
-    config: OrganConfig, side: str = "fixed", cache_dir: str | Path | None = None
+    config: OrganConfig,
+    side: str = "fixed",
+    cache_dir: str | Path | None = None,
+    modality: str | None = None,
 ) -> OrganSegmenter | None:
     """Instantiate the segmenter described by the configuration, for one side."""
     backend = config.backend
@@ -369,18 +410,20 @@ def build_segmenter(
             return None
         return ExternalSegmenter(labelmap=labelmap, mask=mask, label_names=config.label_names)
     if backend is OrganBackend.TOTALSEGMENTATOR:
+        task = config.ts_task
+        if task == "auto":
+            task = "total_mr" if (modality or "").upper() == "MR" else "total"
+        if task == "total" and (modality or "").upper() == "MR":
+            raise ValueError(
+                "TotalSegmentator task='total' is CT-only but the volume is MR; "
+                "use organs.ts_task=total_mr or auto"
+            )
         return TotalSegmentatorSegmenter(
+            task=task,
+            fast=config.ts_fast,
             roi_subset=resolve_targets(config.targets) or None,
             device=config.device,
             cache_dir=cache_dir,
+            timeout_seconds=config.ts_timeout_seconds,
         )
     raise ValueError(f"unhandled organ backend: {backend}")
-
-
-def _same_grid(a: sitk.Image, b: sitk.Image, tol: float = 1e-4) -> bool:
-    return (
-        a.GetSize() == b.GetSize()
-        and np.allclose(a.GetSpacing(), b.GetSpacing(), atol=tol)
-        and np.allclose(a.GetOrigin(), b.GetOrigin(), atol=tol)
-        and np.allclose(a.GetDirection(), b.GetDirection(), atol=tol)
-    )

@@ -18,8 +18,6 @@ from regix.logging_utils import get_logger, pseudonymize
 
 log = get_logger("io.volume")
 
-_IMAGE_SUFFIXES = {".nii", ".nii.gz", ".nrrd", ".nhdr", ".mha", ".mhd", ".img", ".hdr", ".gipl", ".vtk"}
-
 
 @dataclass
 class Volume:
@@ -63,17 +61,9 @@ class Volume:
         arr = sitk.GetArrayFromImage(self.image)
         return arr if dtype is None else arr.astype(dtype, copy=False)
 
-    def same_grid_as(self, other: Volume, tol: float = 1e-4) -> bool:
-        return (
-            self.size == other.size
-            and np.allclose(self.spacing, other.spacing, atol=tol)
-            and np.allclose(self.origin, other.origin, atol=tol)
-            and np.allclose(self.direction, other.direction, atol=tol)
-        )
-
     # -- non-destructive transformations ---------------------------------- #
     def with_image(self, image: sitk.Image, **overrides: Any) -> Volume:
-        return replace(self, image=image, **overrides)
+        return replace(self, image=image, meta=dict(self.meta), **overrides)
 
     def cast(self, pixel_type=sitk.sitkFloat32) -> Volume:
         if self.image.GetPixelID() == pixel_type:
@@ -81,8 +71,26 @@ class Volume:
         return self.with_image(sitk.Cast(self.image, pixel_type))
 
     def describe(self) -> dict[str, Any]:
-        arr = self.array(np.float32)
-        finite = arr[np.isfinite(arr)]
+        arr = sitk.GetArrayViewFromImage(self.image)
+        finite_mask = np.isfinite(arr)
+        n_bad = int(arr.size - np.count_nonzero(finite_mask))
+        if n_bad:
+            finite = np.asarray(arr[finite_mask], dtype=np.float32)
+            minimum = float(finite.min()) if finite.size else None
+            maximum = float(finite.max()) if finite.size else None
+        else:
+            finite = np.asarray(arr).reshape(-1)
+            stats = sitk.StatisticsImageFilter()
+            stats.Execute(self.image)
+            minimum = float(stats.GetMinimum())
+            maximum = float(stats.GetMaximum())
+        max_samples = 1_000_000
+        if finite.size > max_samples:
+            rng = np.random.default_rng(20250101)
+            sample = finite[rng.choice(finite.size, size=max_samples, replace=False)]
+        else:
+            sample = finite
+        percentiles = np.percentile(sample, (1, 99)) if sample.size else (None, None)
         return {
             "subject_id": self.subject_id,
             "modality": self.modality,
@@ -93,11 +101,12 @@ class Volume:
             "origin": [round(o, 3) for o in self.origin],
             "orientation": orientation_code(self.image),
             "intensity": {
-                "min": float(finite.min()) if finite.size else None,
-                "max": float(finite.max()) if finite.size else None,
-                "p1": float(np.percentile(finite, 1)) if finite.size else None,
-                "p99": float(np.percentile(finite, 99)) if finite.size else None,
-                "nan_voxels": int(np.count_nonzero(~np.isfinite(arr))),
+                "min": minimum,
+                "max": maximum,
+                "p1": float(percentiles[0]) if sample.size else None,
+                "p99": float(percentiles[1]) if sample.size else None,
+                "nan_voxels": n_bad,
+                "percentile_sample_voxels": int(sample.size),
             },
             "source": str(self.source) if self.source else None,
         }
@@ -124,6 +133,7 @@ def load_volume(
     role: str = "image",
     pseudonymize_ids: bool = True,
     salt: str | None = None,
+    series_uid: str | None = None,
 ) -> Volume:
     """Load a volume from an image file or a DICOM directory.
 
@@ -136,24 +146,44 @@ def load_volume(
     if p.is_dir():
         from regix.io.dicom import list_series, load_series
 
-        series = list_series(p)
-        if not series:
+        candidates = list_series(p)
+        if not candidates:
             raise ValueError(f"no DICOM series found in {p}")
-        if len(series) > 1:
+        if series_uid is not None:
+            matches = [series for series in candidates if series.series_uid == series_uid]
+            if not matches:
+                raise ValueError(f"DICOM series {series_uid} is not present in {p}")
+            selected = matches[0]
+        else:
+            selected = candidates[0]
+        if len(candidates) > 1 and series_uid is None:
             log.warning(
                 "%d DICOM series in %s; selecting the largest one (%s, %d slices). "
                 "Use `regix inspect` and pass the UID explicitly to remove the ambiguity.",
-                len(series),
+                len(candidates),
                 p,
-                series[0].modality,
-                series[0].n_files,
+                selected.modality,
+                selected.n_files,
             )
-        return load_series(series[0], pseudonymize_ids=pseudonymize_ids, salt=salt, role=role)
+        volume = load_series(selected, pseudonymize_ids=pseudonymize_ids, salt=salt, role=role)
+        if len(candidates) > 1 and series_uid is None:
+            volume.meta["series_ambiguity"] = {
+                "selected": selected.series_uid,
+                "available": [series.series_uid for series in candidates],
+            }
+        return volume
 
     image = sitk.ReadImage(str(p))
     if image.GetDimension() == 4:
         log.warning("4D volume detected (%s): extracting the first time point", p.name)
-        image = image[..., 0]
+        size = list(image.GetSize())
+        size[3] = 0
+        image = sitk.Extract(image, size, [0, 0, 0, 0])
+    if image.GetDimension() != 3:
+        raise ValueError(
+            f"{p.name} is {image.GetDimension()}D; Regix accepts 3D volumes and 4D volumes "
+            "from which the first 3D time point can be extracted"
+        )
     if image.GetNumberOfComponentsPerPixel() > 1 and role != "features":
         raise ValueError(
             f"{p.name} has {image.GetNumberOfComponentsPerPixel()} components per voxel; "
