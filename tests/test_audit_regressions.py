@@ -16,6 +16,7 @@ import SimpleITK as sitk
 from pydantic import ValidationError
 
 from regix.config import QCGates, RegistrationConfig, StageConfig
+from regix.features import FeaturePair
 from regix.io.volume import Volume, load_volume
 from regix.io.writers import load_landmarks
 from regix.layout import clean_known_artifacts
@@ -62,6 +63,151 @@ def _state(tmp_path: Path, fixed: Volume, moving: Volume) -> RunState:
         out_dir=tmp_path,
         outputs={},
     )
+
+
+def _feature_pair(provider: str) -> FeaturePair:
+    image = sitk.Image([8, 8, 8], sitk.sitkFloat32)
+    descriptor = "Anatomix" if provider == "anatomix" else "MIND-SSC"
+    return FeaturePair(
+        fixed_channels=[image],
+        moving_channels=[sitk.Image(image)],
+        provider=provider,
+        info={"provider": provider, "descriptor": descriptor, "pca": {}},
+    )
+
+
+def _feature_inputs(tmp_path: Path, provider: str = "auto"):
+    from regix.pipeline import RegistrationPipeline
+
+    image = sitk.Image([8, 8, 8], sitk.sitkFloat32)
+    fixed = _volume(image, "CT")
+    moving = _volume(sitk.Image(image), "MR")
+    config = RegistrationConfig(
+        features={"enabled": True, "provider": provider},
+        deformable_engine="none",
+    )
+    manifest = RunManifest("features", tmp_path, redact_paths=False)
+    return RegistrationPipeline(config), fixed, moving, manifest
+
+
+def test_feature_provider_auto_uses_anatomix_when_available(tmp_path, monkeypatch):
+    from regix.features import anatomix as anatomix_module
+
+    pipeline, fixed, moving, manifest = _feature_inputs(tmp_path)
+    monkeypatch.setattr(anatomix_module, "anatomix_available", lambda: (True, "ok"))
+    monkeypatch.setattr(
+        anatomix_module,
+        "extract_feature_pair",
+        lambda *_args, **_kwargs: _feature_pair("anatomix"),
+    )
+
+    _, _, info = pipeline._extract_features(fixed, moving, None, None, manifest)
+
+    assert info["requested_provider"] == "auto"
+    assert info["provider"] == "anatomix"
+    assert info["descriptor"] == "Anatomix"
+    assert info["fallback"] is None
+
+
+def test_feature_provider_auto_falls_back_to_mind_when_anatomix_is_unavailable(tmp_path, monkeypatch):
+    from regix.features import anatomix as anatomix_module
+    from regix.features import mind as mind_module
+
+    pipeline, fixed, moving, manifest = _feature_inputs(tmp_path)
+    monkeypatch.setattr(
+        anatomix_module,
+        "anatomix_available",
+        lambda: (False, "the anatomix package is not installed"),
+    )
+    monkeypatch.setattr(
+        mind_module,
+        "extract_mind_feature_pair",
+        lambda *_args, **_kwargs: _feature_pair("mind"),
+    )
+
+    _, _, info = pipeline._extract_features(fixed, moving, None, None, manifest)
+
+    assert info["requested_provider"] == "auto"
+    assert info["provider"] == "mind"
+    assert info["descriptor"] == "MIND-SSC"
+    assert info["fallback"] == "anatomix -> mind"
+    assert any("anatomix unavailable" in warning for warning in manifest.warnings)
+
+
+def test_feature_provider_anatomix_fails_when_unavailable(tmp_path, monkeypatch):
+    from regix.features import anatomix as anatomix_module
+    from regix.pipeline import RegistrationFailure
+
+    pipeline, fixed, moving, manifest = _feature_inputs(tmp_path, provider="anatomix")
+    monkeypatch.setattr(anatomix_module, "anatomix_available", lambda: (False, "missing weights"))
+
+    with pytest.raises(RegistrationFailure, match="features.provider=anatomix.*missing weights"):
+        pipeline._extract_features(fixed, moving, None, None, manifest)
+
+
+def test_feature_provider_mind_does_not_import_anatomix_or_torch(tmp_path, monkeypatch):
+    import builtins
+
+    from regix.features import mind as mind_module
+
+    pipeline, fixed, moving, manifest = _feature_inputs(tmp_path, provider="mind")
+    monkeypatch.setattr(
+        mind_module,
+        "extract_mind_feature_pair",
+        lambda *_args, **_kwargs: _feature_pair("mind"),
+    )
+    imported: list[str] = []
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "anatomix" or name.startswith("torch") or name == "regix.features.anatomix":
+            imported.append(name)
+            raise AssertionError(f"forbidden import on the MIND path: {name}")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    _, _, info = pipeline._extract_features(fixed, moving, None, None, manifest)
+
+    assert info["provider"] == "mind"
+    assert imported == []
+
+
+def test_features_disabled_keep_multimodal_registration_on_intensities():
+    from regix.pipeline import RegistrationPipeline
+    from regix.registration.params import ParamContext, resolve_metric
+
+    config = RegistrationConfig(features={"enabled": False}, deformable_engine="none")
+    assert not RegistrationPipeline(config)._features_wanted(multimodal=True)
+    context = ParamContext(
+        dimension=3,
+        n_channels=1,
+        working_spacing_mm=2.0,
+        has_mask=False,
+        fixed_modality="CT",
+        moving_modality="MR",
+        features_available=False,
+        n_voxels=32**3,
+        intensity_range=(0.0, 1.0),
+    )
+    assert resolve_metric(config.stages[0], context).value == "mi"
+
+
+def test_historical_feature_configuration_defaults_to_auto_provider(tmp_path, monkeypatch):
+    from regix.features import anatomix as anatomix_module
+
+    config = RegistrationConfig.model_validate({"features": {"enabled": True}, "deformable_engine": "none"})
+    assert config.features.provider == "auto"
+    pipeline, fixed, moving, manifest = _feature_inputs(tmp_path)
+    pipeline.config = config
+    monkeypatch.setattr(anatomix_module, "anatomix_available", lambda: (True, "ok"))
+    monkeypatch.setattr(
+        anatomix_module,
+        "extract_feature_pair",
+        lambda *_args, **_kwargs: _feature_pair("anatomix"),
+    )
+
+    _, _, info = pipeline._extract_features(fixed, moving, None, None, manifest)
+    assert info["provider"] == "anatomix"
 
 
 def test_a_4d_volume_yields_the_first_3d_time_point(tmp_path):

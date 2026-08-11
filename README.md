@@ -45,16 +45,20 @@ Three invariants guide the implementation:
 ### Installation
 
 ```bash
-pip install -e .                       # core CPU pipeline
-pip install -e ".[features]"           # torch/monai feature tooling
+pip install regix-medical
+pip install "regix-medical[report]"
+pip install "regix-medical[api,report]"
+pip install "regix-medical[features]"
+pip install "regix-medical[totalsegmentator]"
 pip install "anatomix @ git+https://github.com/neel-dey/anatomix.git"  # optional model
-pip install -e ".[totalsegmentator]"   # optional automatic organ masks
-pip install -e ".[api,report]"         # HTTP service and QC figures
 regix doctor
 ```
 
-Anatomix is installed explicitly so its code, weights and terms can be reviewed. Core
-registration, mutual information and MIND-SSC do not require a GPU or model weights.
+`report` adds QC figures, `api` the HTTP service, `features` the torch/Monai tooling used
+by Anatomix and feature deformation, and `totalsegmentator` automatic organ masks.
+Anatomix remains an explicit upstream install so its code, weights and terms can be
+reviewed. Core registration, mutual information and MIND-SSC need no GPU or model
+weights. Contributors instead use `pip install -e ".[dev,report]"` from a checkout.
 
 ### Command line
 
@@ -110,6 +114,16 @@ owned transform with no stale file dependency. It creates no persistent Regix re
 manifest or replay bundle; the parent application must provide those when required.
 Use `run()` when the result itself is the standalone deliverable.
 
+### Choose an execution mode
+
+| Need | Entry point | Persistence and limits |
+|---|---|---|
+| Standalone CLI deliverable | `regix register ... -o out/` | Persistent image, transforms, manifest and configured QC/report |
+| Python deliverable | `RegistrationPipeline.run()` | Returns `RegistrationResult` and writes the same review/replay bundle |
+| Embedded Python | `RegistrationPipeline.compute()` | Returns the result without persistent Regix artifacts; its automatically deleted temporary directory is required by elastix |
+| Transform only | `compute(..., registered_image=False, qc=False)` | No registered image, image-dependent QC, report, manifest or replay bundle |
+| HTTP service | `uvicorn regix.api:app` | Path-based, single-process/in-memory reference service; production needs external identity, queueing and persistence |
+
 ## Standalone result
 
 A successful `run()` returns the result in Python and writes a self-contained review
@@ -145,6 +159,34 @@ not mislabel them as a linear DICOM registration. See
 Presets are starting points; deployment acceptance gates must come from the actual use
 case and local validation.
 
+### Custom Elastix parameter files
+
+An Elastix parameter file is optional. To use a file from the
+[Elastix Model Zoo](https://elastix.lumc.nl/modelzoo/) or a site-validated file, point
+the relevant stage at the user-owned file in a YAML configuration:
+
+```yaml
+extends: base
+stages:
+  - type: rigid
+  - type: affine
+    parameter_file: /absolute/path/to/Parameters.Par0008.affine.txt
+```
+
+Then pass the configuration to the normal command:
+
+```bash
+regix register fixed.nii.gz moving.nii.gz -o out --config my-zoo-config.yaml
+```
+
+Regix does not bundle or download the Zoo. The supplied file remains authoritative for
+its optimizer, sampler, pyramids, schedules, metric and internal pixel types; `extra`
+can override individual values. Regix re-imposes `UseDirectionCosines=true`,
+`HowToCombineTransforms=Compose`, `AutomaticTransformInitialization=false` and
+`WriteResultImage=false` because those values are pipeline safety contracts. The
+effective file used for every stage is saved under `out/elastix/` for review and replay.
+The declared stage `type` must agree with the file's `Transform`.
+
 ## How it works
 
 1. Load volumes and validate their physical geometry and field-of-view relationship.
@@ -162,11 +204,31 @@ case and local validation.
 | Medical-image I/O and transforms | SimpleITK and pydicom |
 | Optional organ segmentation | [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) or supplied masks |
 
-Anatomix produces 16 learned feature channels; Regix projects both volumes through one
-shared PCA basis before comparing corresponding channels. MIND-SSC provides a local,
-deterministic 12-channel fallback without learned weights. Neither performs the
-registration: both provide a comparable representation to the optimizer. The full
-contracts are documented in [Architecture](docs/ARCHITECTURE.md).
+| Comparison | Intended use and operational property |
+|---|---|
+| Intensities / NCC | Monomodal pairs |
+| Intensities / mutual information | Multimodal without descriptors |
+| Anatomix | Learned descriptor; GPU recommended; external weights and installation |
+| MIND-SSC | Analytical, CPU and deterministic; less discriminative |
+| `provider=auto` | Anatomix if executable, then MIND-SSC, then intensities with recorded warnings |
+| `provider=anatomix` / `provider=mind` | Strict, reproducible provider selection; failure instead of switching provider |
+
+`features.enabled=false` disables descriptors, `auto` requests them for multimodal or
+feature-dependent stages, and `true` requests them explicitly. `features.allow_cpu`
+only permits Anatomix on CPU; MIND is always CPU-based. Choose a strict provider from
+the CLI when reproducibility matters:
+
+```bash
+regix register fixed.nii.gz moving.nii.gz -o out \
+  --features --feature-provider mind
+regix register fixed.nii.gz moving.nii.gz -o out \
+  --features --feature-provider anatomix
+```
+
+Anatomix's exact weights, licence, GPU environment and suitability for the intended
+imaging domain must be reviewed separately. Regix applies one shared PCA basis to the
+fixed and moving descriptor channels; the detailed Anatomix/MIND contracts remain in
+[Architecture](docs/ARCHITECTURE.md).
 
 ## Validation snapshot
 
@@ -181,7 +243,7 @@ Synthetic phantoms provide known transformations and deliberately failing pairs:
 | Unrelated volumes | explicit `FAIL` |
 | Restitution | native air intensity remains below -500 HU |
 
-The complete collection has 216 tests and an enforced 81% coverage floor; the measured
+The complete collection has 225 tests and an enforced 81% coverage floor; the measured
 coverage for this archive is 82%. Exact commands, results, conditional skips and
 unverified hardware/clinical boundaries are recorded in [Verification](VERIFICATION.md).
 Synthetic success is not clinical validation: patient-data accuracy requires independent

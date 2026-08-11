@@ -19,7 +19,12 @@ from __future__ import annotations
 import numpy as np
 import SimpleITK as sitk
 
+from regix.config import FeatureConfig
+from regix.features import FeaturePair
+from regix.features.reduce import features_to_sitk, joint_pca_reduce
+from regix.io.volume import Volume
 from regix.logging_utils import get_logger
+from regix.preprocess.intensity import HU_WINDOWS, normalize_for_features
 
 log = get_logger("features.mind")
 
@@ -96,6 +101,64 @@ def mind_ssc_features(
     np.exp(distances, out=distances)
     distances /= distances.max(axis=0, keepdims=True) + eps
     return distances
+
+
+def extract_mind_feature_pair(
+    fixed: Volume,
+    moving: Volume,
+    config: FeatureConfig,
+    fixed_mask: sitk.Image | None = None,
+    moving_mask: sitk.Image | None = None,
+    seed: int = 0,
+) -> FeaturePair:
+    """Extract and jointly reduce MIND-SSC without importing Anatomix or torch."""
+
+    def _clip(modality: str | None) -> tuple[float, float] | None:
+        if (modality or "").upper() in ("CT", "CBCT"):
+            return HU_WINDOWS["ct_registration"]
+        return None
+
+    fixed_array = normalize_for_features(fixed.image, _clip(fixed.modality))
+    moving_array = normalize_for_features(moving.image, _clip(moving.modality))
+    fixed_spacing = tuple(float(value) for value in fixed.spacing)
+    moving_spacing = tuple(float(value) for value in moving.spacing)
+    fixed_features = mind_ssc_features(
+        fixed_array,
+        spacing=(fixed_spacing[2], fixed_spacing[1], fixed_spacing[0]),
+    )
+    moving_features = mind_ssc_features(
+        moving_array,
+        spacing=(moving_spacing[2], moving_spacing[1], moving_spacing[0]),
+    )
+
+    def _mask_array(mask: sitk.Image | None, shape: tuple[int, ...]) -> np.ndarray | None:
+        if mask is None:
+            return None
+        array = sitk.GetArrayViewFromImage(mask)
+        if array.shape != shape:
+            raise ValueError(f"feature mask shape {array.shape} does not match feature grid {shape}")
+        return np.asarray(array > 0)
+
+    fixed_reduced, moving_reduced, pca_info = joint_pca_reduce(
+        fixed_features,
+        moving_features,
+        n_components=config.n_components,
+        max_voxels=config.pca_max_voxels,
+        fixed_mask=_mask_array(fixed_mask, fixed_features.shape[1:]),
+        moving_mask=_mask_array(moving_mask, moving_features.shape[1:]),
+        seed=seed,
+    )
+    return FeaturePair(
+        fixed_channels=features_to_sitk(fixed_reduced, fixed.image),
+        moving_channels=features_to_sitk(moving_reduced, moving.image),
+        provider="mind",
+        info={
+            "provider": "mind",
+            "descriptor": "MIND-SSC",
+            "raw_channels": int(fixed_features.shape[0]),
+            "pca": pca_info,
+        },
+    )
 
 
 def _box_mean(volume: np.ndarray, radius: int) -> np.ndarray:

@@ -177,8 +177,15 @@ class FeatureConfig(BaseModel):
         default="auto",
         description=(
             "auto = request features when modalities differ or a feature/deformable stage "
-            "needs them. Providers fall back anatomix -> CPU MIND-SSC -> intensities; "
+            "needs them. With provider=auto, fallback is anatomix -> CPU MIND-SSC -> intensities; "
             "--allow-cpu-features only permits anatomix itself to run on CPU."
+        ),
+    )
+    provider: Literal["auto", "anatomix", "mind"] = Field(
+        default="auto",
+        description=(
+            "Descriptor provider. auto preserves the anatomix -> MIND-SSC -> intensities "
+            "fallback chain; anatomix and mind are strict and never switch provider."
         ),
     )
     variant: Literal["anatomix", "anatomix-dev", "anatomix-dev-vit"] = "anatomix"
@@ -603,6 +610,10 @@ class RegistrationConfig(BaseModel):
             raise ValueError("a B-spline stage and deformable_engine=convexadam are redundant: choose one")
         if has_bspline and self.deformable_engine is DeformableEngine.NONE:
             raise ValueError("a bspline stage is defined but deformable_engine=none")
+        if self.deformable_engine is DeformableEngine.CONVEXADAM and self.features.provider == "mind":
+            raise ValueError("deformable_engine=convexadam requires features.provider=auto or anatomix")
+        if self.deformable_engine is DeformableEngine.CONVEXADAM and self.features.enabled is False:
+            raise ValueError("deformable_engine=convexadam requires features.enabled=auto or true")
         for s in self.stages:
             if s.metric in (Metric.FEATURES_NCC, Metric.FEATURES_MSE) and self.features.enabled is False:
                 raise ValueError(

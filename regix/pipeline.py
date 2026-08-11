@@ -645,8 +645,15 @@ class RegistrationPipeline:
         # -- 7. features ----------------------------------------------------- #
         fixed_channels: list[sitk.Image] | None = None
         moving_channels: list[sitk.Image] | None = None
-        feature_info: dict[str, Any] = {}
+        feature_info: dict[str, Any] = {
+            "requested_provider": cfg.features.provider,
+            "provider": "none",
+            "descriptor": "intensity",
+            "fallback": None,
+            "requested": False,
+        }
         if self._features_wanted(multimodal):
+            feature_info["requested"] = True
             with manifest.step("features") as info:
                 fixed_channels, moving_channels, feature_info = self._extract_features(
                     fixed_work, moving_work, work_mask_fixed, work_mask_moving, manifest
@@ -852,7 +859,9 @@ class RegistrationPipeline:
                     "metrics": " / ".join(
                         sorted({s.get("metric", "?") for s in [x.to_dict() for x in outcome.stages]})
                     ),
-                    "features": feature_info.get("provider", "none"),
+                    "feature provider requested": feature_info["requested_provider"],
+                    "feature descriptor used": feature_info["descriptor"],
+                    "feature fallback": feature_info["fallback"],
                     "deformable": cfg.deformable_engine.value,
                     "segmentation": cfg.organs.backend.value,
                     "initialization": init_report.get("chosen"),
@@ -974,12 +983,26 @@ class RegistrationPipeline:
         mask_moving: sitk.Image | None,
         manifest: RunManifest,
     ) -> tuple[list[sitk.Image] | None, list[sitk.Image] | None, dict[str, Any]]:
-        from regix.features.anatomix import anatomix_available, extract_feature_pair
-
         cfg = self.config.features
-        ok, reason = anatomix_available()
-        providers = ["anatomix", "mind"] if ok else ["mind"]
-        if not ok:
+        requested_provider = cfg.provider
+        providers: list[str]
+        fallback_from: str | None = None
+
+        if requested_provider == "mind":
+            providers = ["mind"]
+        else:
+            from regix.features.anatomix import anatomix_available
+
+            ok, reason = anatomix_available()
+            if requested_provider == "anatomix" and not ok:
+                raise RegistrationFailure(
+                    f"features.provider=anatomix was requested but Anatomix cannot run ({reason})"
+                )
+            providers = ["anatomix"] if requested_provider == "anatomix" else ["anatomix", "mind"]
+            if not ok:
+                providers = ["mind"]
+                fallback_from = "anatomix"
+        if requested_provider == "auto" and fallback_from == "anatomix":
             if self.config.deformable_engine is DeformableEngine.CONVEXADAM:
                 raise RegistrationFailure(
                     f"deformable_engine=convexadam requires torch + anatomix ({reason})"
@@ -989,30 +1012,70 @@ class RegistrationPipeline:
         pair = None
         for provider in providers:
             try:
-                pair = extract_feature_pair(
-                    fixed_work,
-                    moving_work,
-                    cfg,
-                    fixed_mask=mask_fixed,
-                    moving_mask=mask_moving,
-                    provider=provider,
-                    seed=self.config.runtime.seed,
-                )
+                if provider == "mind":
+                    from regix.features.mind import extract_mind_feature_pair
+
+                    pair = extract_mind_feature_pair(
+                        fixed_work,
+                        moving_work,
+                        cfg,
+                        fixed_mask=mask_fixed,
+                        moving_mask=mask_moving,
+                        seed=self.config.runtime.seed,
+                    )
+                else:
+                    from regix.features.anatomix import extract_feature_pair
+
+                    pair = extract_feature_pair(
+                        fixed_work,
+                        moving_work,
+                        cfg,
+                        fixed_mask=mask_fixed,
+                        moving_mask=mask_moving,
+                        provider="anatomix",
+                        seed=self.config.runtime.seed,
+                    )
                 break
             except Exception as exc:
                 detail = f"{provider}: {type(exc).__name__}: {exc}"
                 errors.append(detail)
                 manifest.warn(f"features via {provider} unavailable ({type(exc).__name__}: {exc})")
+                if requested_provider != "auto":
+                    raise RegistrationFailure(
+                        f"features.provider={requested_provider} was requested but failed: {exc}"
+                    ) from exc
+                if provider == "anatomix":
+                    fallback_from = "anatomix"
         if pair is None:
             manifest.degraded("all feature providers failed: falling back to intensities")
-            return None, None, {"provider": "none", "errors": errors}
+            return (
+                None,
+                None,
+                {
+                    "requested_provider": requested_provider,
+                    "provider": "none",
+                    "descriptor": "intensity",
+                    "fallback": "anatomix -> MIND-SSC -> intensities",
+                    "errors": errors,
+                    "requested": True,
+                },
+            )
         log.info(
             "features %s: %d channels (explained variance %s)",
             pair.provider,
             pair.n_channels,
             pair.info.get("pca", {}).get("explained_variance_ratio", "n/a"),
         )
-        return pair.fixed_channels, pair.moving_channels, pair.info
+        info = {
+            **pair.info,
+            "requested_provider": requested_provider,
+            "provider": pair.provider,
+            "descriptor": pair.info.get("descriptor", pair.provider),
+            "fallback": f"{fallback_from} -> {pair.provider}" if fallback_from else None,
+            "errors": errors,
+            "requested": True,
+        }
+        return pair.fixed_channels, pair.moving_channels, info
 
     def _resolve_stages(self):
         """Adapt the stages to the target organ profile (B-spline grid, deformability)."""

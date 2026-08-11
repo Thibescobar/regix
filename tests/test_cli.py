@@ -209,6 +209,24 @@ def test_set_overrides_reach_the_configuration(tmp_path, phantom_pair):
     assert "max_iterations: 999" in result.output
 
 
+def test_feature_provider_option_reaches_the_configuration(tmp_path, phantom_pair):
+    paths, _ = phantom_pair
+    result = _run(
+        "register",
+        str(paths["fixed"]),
+        str(paths["moving"]),
+        "-o",
+        str(tmp_path / "out"),
+        "--dry-run",
+        "--features",
+        "--feature-provider",
+        "mind",
+    )
+
+    assert "enabled: true" in result.output
+    assert "provider: mind" in result.output
+
+
 def test_invalid_set_is_rejected(tmp_path, phantom_pair):
     paths, _ = phantom_pair
     result = runner.invoke(

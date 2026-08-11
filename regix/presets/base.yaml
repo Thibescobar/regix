@@ -19,7 +19,10 @@ preprocess:
     normalize: none
 
 features:
-  enabled: auto        # active when the pair is multimodal and anatomix is available
+  # auto requests descriptors for multimodal pairs. Provider auto then tries Anatomix,
+  # MIND-SSC, and finally intensities if neither descriptor can actually be produced.
+  enabled: auto
+  provider: auto
   n_components: 4
 
 organs:

@@ -5,6 +5,19 @@ and CLI contracts.
 
 ## 0.3.0 — 2026-08-08
 
+### Packaging and descriptor selection
+
+- Prepared the PyPI distribution as `regix-medical` while preserving the `regix`
+  package, `import regix` and the `regix` command; updated the self-referential `all`
+  extra and user installation guidance.
+- Added `features.provider=auto|anatomix|mind` and CLI `--feature-provider`. The default
+  keeps the existing Anatomix -> MIND-SSC -> intensity fallback; explicit Anatomix and
+  MIND modes are strict and record the requested and effective descriptors.
+- Kept the MIND-only path independent of Anatomix, torch and GPU imports, and clarified
+  that `features.allow_cpu` applies only to Anatomix.
+- Removed the obsolete post-audit handoff guide; durable audit and verification evidence
+  remains in `AUDIT.md`, `AUDIT_CLOSURE.md` and `VERIFICATION.md`.
+
 ### Embedded execution
 
 - Added `RegistrationPipeline.compute()` and the `regix.compute()` shortcut. They run

@@ -3,7 +3,7 @@ requires = ["setuptools>=68,<82", "wheel>=0.42,<1"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "regix"
+name = "regix-medical"
 dynamic = ["version"]
 description = "Multimodal / multi-organ medical image registration (elastix + anatomix features + organ segmentation)"
 readme = "README.md"
@@ -68,7 +68,7 @@ dev = [
     "fastapi>=0.110,<1",
     "httpx>=0.27,<1",
 ]
-all = ["regix[features,organs,api,report]"]
+all = ["regix-medical[features,organs,api,report]"]
 
 [project.urls]
 Homepage = "https://github.com/Thibescobar/regix"
