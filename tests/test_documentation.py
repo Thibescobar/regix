@@ -149,9 +149,7 @@ def test_verification_test_count_matches_the_collection():
 
     quoted = re.search(r"(\d+)\s+collected", VERIFICATION)
     assert quoted, "VERIFICATION.md no longer quotes the collected-test total"
-    assert int(quoted.group(1)) == total, (
-        f"verification says {quoted.group(1)}, collection says {total}"
-    )
+    assert int(quoted.group(1)) == total, f"verification says {quoted.group(1)}, collection says {total}"
 
 
 # --------------------------------------------------------------------------- #
