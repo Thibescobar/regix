@@ -353,6 +353,8 @@ def test_the_version_is_the_same_in_pyproject_and_in_the_package():
 
 
 def test_distribution_name_and_install_examples_match():
+    from regix.registration.params import ENFORCED_WITH_PARAMETER_FILE
+
     assert re.search(r'^name\s*=\s*"regix-medical"', PYPROJECT, re.M)
     assert 'all = ["regix-medical[features,organs,api,report]"]' in PYPROJECT
     for command in (
@@ -363,6 +365,12 @@ def test_distribution_name_and_install_examples_match():
         'pip install "regix-medical[totalsegmentator]"',
     ):
         assert command in README, f"missing documented install: {command}"
+
+    # Installed users can opt into their own Zoo file without Regix vendoring it.
+    assert "parameter_file: /absolute/path/to/Parameters.Par0008.affine.txt" in README
+    assert "Regix does not bundle or download the Zoo" in README
+    for key, value in ENFORCED_WITH_PARAMETER_FILE.items():
+        assert f"`{key}={' '.join(value)}`" in README
 
 
 def test_documented_feature_providers_are_exactly_the_accepted_values():

@@ -159,6 +159,34 @@ not mislabel them as a linear DICOM registration. See
 Presets are starting points; deployment acceptance gates must come from the actual use
 case and local validation.
 
+### Custom Elastix parameter files
+
+An Elastix parameter file is optional. To use a file from the
+[Elastix Model Zoo](https://elastix.lumc.nl/modelzoo/) or a site-validated file, point
+the relevant stage at the user-owned file in a YAML configuration:
+
+```yaml
+extends: base
+stages:
+  - type: rigid
+  - type: affine
+    parameter_file: /absolute/path/to/Parameters.Par0008.affine.txt
+```
+
+Then pass the configuration to the normal command:
+
+```bash
+regix register fixed.nii.gz moving.nii.gz -o out --config my-zoo-config.yaml
+```
+
+Regix does not bundle or download the Zoo. The supplied file remains authoritative for
+its optimizer, sampler, pyramids, schedules, metric and internal pixel types; `extra`
+can override individual values. Regix re-imposes `UseDirectionCosines=true`,
+`HowToCombineTransforms=Compose`, `AutomaticTransformInitialization=false` and
+`WriteResultImage=false` because those values are pipeline safety contracts. The
+effective file used for every stage is saved under `out/elastix/` for review and replay.
+The declared stage `type` must agree with the file's `Transform`.
+
 ## How it works
 
 1. Load volumes and validate their physical geometry and field-of-view relationship.
