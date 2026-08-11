@@ -37,7 +37,18 @@ def _collected_test_counts() -> dict[str, int]:
     the number the README is supposed to be quoting.
     """
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", "--no-header", "-p", "no:cacheprovider"],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "--no-header",
+            "-p",
+            "no:capture",
+            "-p",
+            "no:cacheprovider",
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -339,6 +350,33 @@ def test_the_version_is_the_same_in_pyproject_and_in_the_package():
     assert 'version = { attr = "regix.__version__" }' in PYPROJECT
     assert not re.search(r'^version\s*=\s*"', PYPROJECT, re.M)
     assert __version__ == "0.3.0"
+
+
+def test_distribution_name_and_install_examples_match():
+    assert re.search(r'^name\s*=\s*"regix-medical"', PYPROJECT, re.M)
+    assert 'all = ["regix-medical[features,organs,api,report]"]' in PYPROJECT
+    for command in (
+        "pip install regix-medical",
+        'pip install "regix-medical[report]"',
+        'pip install "regix-medical[api,report]"',
+        'pip install "regix-medical[features]"',
+        'pip install "regix-medical[totalsegmentator]"',
+    ):
+        assert command in README, f"missing documented install: {command}"
+
+
+def test_documented_feature_providers_are_exactly_the_accepted_values():
+    from typing import get_args
+
+    from regix.cli import FeatureProvider
+    from regix.config import FeatureConfig
+
+    accepted = set(get_args(FeatureConfig.model_fields["provider"].annotation))
+    cli_values = {provider.value for provider in FeatureProvider}
+    documented = set(re.findall(r"provider=(auto|anatomix|mind)", README))
+    assert accepted == {"auto", "anatomix", "mind"}
+    assert cli_values == accepted
+    assert documented == accepted
 
 
 def test_the_ruff_pin_is_the_same_in_pyproject_and_in_ci():

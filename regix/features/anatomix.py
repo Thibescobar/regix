@@ -14,7 +14,6 @@ voxel-wise channel normalisation, and a clean fallback when nothing is installed
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +21,7 @@ import numpy as np
 import SimpleITK as sitk
 
 from regix.config import FeatureConfig
-from regix.features.mind import mind_ssc_features
+from regix.features import FeaturePair
 from regix.features.reduce import features_to_sitk, joint_pca_reduce, voxel_normalize
 from regix.io.volume import Volume
 from regix.logging_utils import get_logger
@@ -70,21 +69,6 @@ def resolve_device(requested: str = "auto", allow_cpu: bool = False) -> str:
         )
     log.warning("anatomix inference on CPU: expect several minutes per volume")
     return "cpu"
-
-
-# --------------------------------------------------------------------------- #
-@dataclass
-class FeaturePair:
-    """Result of extraction on a fixed/moving pair."""
-
-    fixed_channels: list[sitk.Image]
-    moving_channels: list[sitk.Image]
-    provider: str
-    info: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def n_channels(self) -> int:
-        return len(self.fixed_channels)
 
 
 class AnatomixExtractor:
@@ -248,19 +232,23 @@ def extract_feature_pair(
         f_feat = extractor.extract(fixed.image, clip_for_modality(fixed.modality))
         m_feat = extractor.extract(moving.image, clip_for_modality(moving.modality))
         info.update(
+            descriptor="Anatomix",
             variant=cfg.variant,
             device=extractor.device,
             source=getattr(extractor, "_source", None),
             raw_channels=int(f_feat.shape[0]),
         )
     elif chosen == "mind":
-        f_arr = normalize_for_features(fixed.image, clip_for_modality(fixed.modality))
-        m_arr = normalize_for_features(moving.image, clip_for_modality(moving.modality))
-        f_spacing = tuple(float(s) for s in reversed(fixed.spacing))  # ITK (x,y,z) -> numpy (z,y,x)
-        m_spacing = tuple(float(s) for s in reversed(moving.spacing))
-        f_feat = mind_ssc_features(f_arr, spacing=f_spacing)
-        m_feat = mind_ssc_features(m_arr, spacing=m_spacing)
-        info.update(descriptor="MIND-SSC", raw_channels=int(f_feat.shape[0]))
+        from regix.features.mind import extract_mind_feature_pair
+
+        return extract_mind_feature_pair(
+            fixed,
+            moving,
+            cfg,
+            fixed_mask=fixed_mask,
+            moving_mask=moving_mask,
+            seed=seed,
+        )
     else:
         raise ValueError(f"unknown feature provider: {provider}")
 

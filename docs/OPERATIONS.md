@@ -11,7 +11,7 @@ Use a dedicated environment and record the resolved dependencies. Core CPU opera
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install regix
+python -m pip install regix-medical
 regix doctor --json
 regix version --json
 ```
@@ -161,6 +161,32 @@ is cleaned automatically. Consequently it also leaves no Regix manifest, replay 
 report or failure artifact: the parent application must provide any required audit log,
 retention and failure trace. Use `run()` for a standalone deliverable.
 
+### Python result and caller responsibilities
+
+Both Python entry points return `RegistrationResult`:
+
+| Field | Practical use |
+|---|---|
+| `status`, `ok`, `warnings` | Gate verdict and visible degradations; `ok` is true only for `PASS` |
+| `applied_transform` | Owned moving-to-fixed mapping for points and resampling |
+| `registered_image` | Native moving intensities on the fixed grid, unless transform-only mode omitted it |
+| `metrics`, `qc` | Similarity, feature-provider trace, geometry/organ/deformation measurements and gate details |
+| `stages`, `initialization` | Executed stage summaries and selected initialization |
+| `outputs`, `manifest_path`, `seconds` | Persistent bundle locations for `run()` and elapsed time |
+
+| Entry point | Available after return | Not provided |
+|---|---|---|
+| `run()` | Result, registered image, configured outputs, manifest and replay/review bundle | Only outputs explicitly disabled or inapplicable |
+| `compute()` | Result, owned transform, optional registered image and optional QC | Persistent Regix artifacts, report, manifest and replay bundle |
+| Transform-only `compute()` | Owned transform, stages, initialization and non-image result data | Registered image, image-dependent QC and every persistent artifact |
+
+Configuration/input errors, unavailable strict descriptor providers, engine failures and
+invalid output/work directories raise explicit exceptions. A completed computation can
+still return `WARN` or `FAIL`; the caller must interpret the QC policy rather than treat
+return as acceptance. An embedding application owns its persistence, access control,
+traceability, retry/idempotency policy, cleanup after its own failures and recovery after
+process interruption. Use `run()` when Regix should own those standalone artifacts.
+
 ### Reviewing a standalone result
 
 The HTML report starts with the gate verdict and shows a fixed-grey/moving-hot overlay
@@ -196,7 +222,7 @@ also handles orphaned GPU work.
 
 | Layer | Repository evidence | Deployment evidence still required |
 |---|---|---|
-| Software contracts | 216 synthetic/unit/API/CLI/DICOM tests, lint, dead-code scan, package build | Repeat on promoted wheel and target OS/ITK build |
+| Software contracts | 225 synthetic/unit/API/CLI/DICOM tests, lint, dead-code scan, package build | Repeat on promoted wheel and target OS/ITK build |
 | Numerical registration | Ground-truth phantoms, oblique/thick-slice grids, transform probes | Representative scanner protocols and accepted local tolerances |
 | DICOM | Structural pydicom checks; optional `dciodvfy` test | Validator installed, PACS/workstation round trip, site UID policy |
 | Optional ML/GPU | Lazy-import and failure/fallback contracts | Exact weights, GPU/driver stack, domain-shift and deterministic-behaviour assessment |

@@ -7,6 +7,8 @@ registration is correct; recovering an imposed transform to within a voxel does.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 import SimpleITK as sitk
@@ -533,15 +535,21 @@ def test_multimodal_with_the_mind_descriptor(tmp_path):
         fixed_modality="CT",
         moving_modality="MR",
         preprocess={"working_spacing_mm": 2.5},
-        features={"enabled": True, "n_components": 3},
+        features={"enabled": True, "provider": "mind", "n_components": 3},
         output={"dir": str(tmp_path / "out"), "overwrite": True},
         runtime={"log_level": "WARNING"},
         qc={"report_html": False},
     )
     result = RegistrationPipeline(cfg).run(fixed_path, moving_path, tmp_path / "out")
 
-    # anatomix is absent from the test environment: the MIND fallback must kick in.
-    assert result.metrics["features"]["provider"] in ("mind", "anatomix")
+    feature_info = result.metrics["features"]
+    assert feature_info["requested_provider"] == "mind"
+    assert feature_info["provider"] == "mind"
+    assert feature_info["descriptor"] == "MIND-SSC"
+    assert feature_info["fallback"] is None
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["config"]["features"]["provider"] == "mind"
+    assert manifest["metrics"]["features"]["descriptor"] == "MIND-SSC"
     similarity = result.metrics["similarity"]
     assert similarity["nmi_after"] >= similarity["nmi_before"] - 1e-3
     error = _transform_error(result.applied_transform.as_sitk_transform(), truth, ct)

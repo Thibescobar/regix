@@ -13,7 +13,27 @@ In both cases the channels are then reduced by a PCA with a **shared** basis
 across the two volumes (``reduce.py``): without a shared basis, comparing the
 fixed and moving channels is meaningless.
 
-Import from the modules directly: ``from regix.features.anatomix import
-extract_feature_pair``. Nothing is re-exported here, so that importing the package
-never drags torch in.
+Provider implementations remain lazy, so importing this package never imports torch,
+Anatomix or probes a GPU.
 """
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import SimpleITK as sitk
+
+
+@dataclass
+class FeaturePair:
+    """Descriptor channels and traceability information for one image pair."""
+
+    fixed_channels: list[sitk.Image]
+    moving_channels: list[sitk.Image]
+    provider: str
+    info: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def n_channels(self) -> int:
+        return len(self.fixed_channels)

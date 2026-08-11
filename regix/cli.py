@@ -45,6 +45,12 @@ class SegmentBackend(str, Enum):
     TOTALSEGMENTATOR = "totalsegmentator"
 
 
+class FeatureProvider(str, Enum):
+    AUTO = "auto"
+    ANATOMIX = "anatomix"
+    MIND = "mind"
+
+
 @app.callback()
 def _global_options(
     show_version: bool = typer.Option(
@@ -363,7 +369,14 @@ def register(
         None, "--deformable/--no-deformable", help="Force or remove the deformable stage."
     ),
     features: Optional[bool] = typer.Option(
-        None, "--features/--no-features", help="Force or disable the anatomix features."
+        None,
+        "--features/--no-features",
+        help="Force or disable descriptors according to --feature-provider.",
+    ),
+    feature_provider: Optional[FeatureProvider] = typer.Option(
+        None,
+        "--feature-provider",
+        help="Descriptor selection: auto | anatomix | mind.",
     ),
     organ_backend: Optional[OrganBackend] = typer.Option(
         None, "--organ-backend", help="none | external | totalsegmentator"
@@ -429,6 +442,8 @@ def register(
         overrides.setdefault("organs", {})["roi_crop"] = roi_crop
     if features is not None:
         overrides.setdefault("features", {})["enabled"] = features
+    if feature_provider is not None:
+        overrides.setdefault("features", {})["provider"] = feature_provider.value
     if allow_cpu_features:
         overrides.setdefault("features", {})["allow_cpu"] = True
     if init:

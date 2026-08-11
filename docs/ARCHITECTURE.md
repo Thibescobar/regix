@@ -161,12 +161,29 @@ patch self-similarities in its six-neighbourhood. It needs no learned weights an
 deterministic, but its local context is less discriminative in homogeneous or repeated
 anatomy than a learned representation.
 
+Descriptor demand and provider selection are separate. `features.enabled=false`
+disables descriptor production, `auto` requests it only for a multimodal pair or a
+configured feature-dependent stage, and `true` requests it explicitly. Once requested:
+
+- `provider=auto` preserves the established Anatomix -> MIND-SSC -> intensity chain;
+  every unavailable or failed provider is recorded in warnings and the manifest;
+- `provider=anatomix` is strict: availability, device, weights and execution errors are
+  fatal rather than silently changing the representation;
+- `provider=mind` enters MIND-SSC directly and never imports or initializes Anatomix,
+  torch or a GPU; failures are fatal rather than changing to intensities;
+- `allow_cpu` only authorizes Anatomix CPU inference. MIND is intrinsically CPU-based.
+
+`variant` remains solely the Anatomix checkpoint architecture. The result and manifest
+record the requested provider, effective descriptor and fallback chain independently.
+Historical configurations without `provider` default to `auto`.
+
 The automatic metric policy is deliberately conservative:
 
 - monomodal intensity stages use NCC;
 - multimodal rigid/affine intensity stages use Mattes mutual information;
-- configured feature stages use Anatomix when installed and valid;
-- unavailable Anatomix falls back to MIND-SSC rather than disabling multimodal support;
+- configured feature stages use the selected provider when descriptors are available;
+- in provider auto, unavailable Anatomix falls back to MIND-SSC rather than disabling
+  multimodal support;
 - QC records NCC and NMI independently so a feature-stage gain cannot hide an intensity
   degradation.
 

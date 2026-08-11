@@ -1,8 +1,8 @@
 # Clôture de l'audit
 
 Cette matrice relie chacun des 134 constats de `AUDIT.md` à sa résolution dans la
-version 0.2.0. Elle décrit l'état de l'archive de livraison, pas celui de la branche
-historique mentionnée dans `HANDOFF.md`.
+version 0.2.0. Elle décrit l'état de l'archive de livraison auditée ; les instructions
+temporaires de reprise par branches ont été retirées après fusion.
 
 Statuts : **C** = correction vérifiée localement ; **D** = décision de conception rendue
 explicite et protégée ; **C/E** = correction locale présente, avec validation externe
