@@ -2,10 +2,11 @@
 
 Multimodal, multi-organ medical image registration with elastix.
 
-![CI](https://github.com/Thibescobar/regix/actions/workflows/ci.yml/badge.svg)
-![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
-![Coverage](https://img.shields.io/badge/coverage-82%25-yellowgreen)
-![License](https://img.shields.io/badge/license-Apache%202.0-green)
+[![PyPI version](https://img.shields.io/pypi/v/regix-medical.svg)](https://pypi.org/project/regix-medical/)
+[![CI](https://github.com/Thibescobar/regix/actions/workflows/ci.yml/badge.svg)](https://github.com/Thibescobar/regix/actions/workflows/ci.yml)
+[![Python versions](https://img.shields.io/pypi/pyversions/regix-medical.svg)](https://pypi.org/project/regix-medical/)
+[![Coverage](https://img.shields.io/badge/coverage-82%25-yellowgreen)](https://github.com/Thibescobar/regix/blob/main/VERIFICATION.md)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green)](https://github.com/Thibescobar/regix/blob/main/LICENSE)
 
 Regix turns DICOM series or NIfTI volumes into an auditable registration result. It
 combines rigid, affine and deformable elastix stages with organ-aware initialization,

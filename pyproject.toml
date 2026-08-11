@@ -73,6 +73,8 @@ all = ["regix-medical[features,organs,api,report]"]
 [project.urls]
 Homepage = "https://github.com/Thibescobar/regix"
 Repository = "https://github.com/Thibescobar/regix"
+Documentation = "https://github.com/Thibescobar/regix/tree/main/docs"
+Changelog = "https://github.com/Thibescobar/regix/blob/main/CHANGELOG.md"
 Issues = "https://github.com/Thibescobar/regix/issues"
 
 [project.scripts]

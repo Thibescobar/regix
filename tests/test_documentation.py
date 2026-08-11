@@ -357,6 +357,12 @@ def test_distribution_name_and_install_examples_match():
 
     assert re.search(r'^name\s*=\s*"regix-medical"', PYPROJECT, re.M)
     assert 'all = ["regix-medical[features,organs,api,report]"]' in PYPROJECT
+    assert (
+        "[![PyPI version](https://img.shields.io/pypi/v/regix-medical.svg)]"
+        "(https://pypi.org/project/regix-medical/)" in README
+    )
+    assert 'Documentation = "https://github.com/Thibescobar/regix/tree/main/docs"' in PYPROJECT
+    assert 'Changelog = "https://github.com/Thibescobar/regix/blob/main/CHANGELOG.md"' in PYPROJECT
     for command in (
         "pip install regix-medical",
         'pip install "regix-medical[report]"',

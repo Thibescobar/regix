@@ -9,6 +9,8 @@ and CLI contracts.
 
 - Replaced repository-relative README image and documentation links with absolute
   GitHub URLs so the project description renders correctly on PyPI.
+- Added a dynamic PyPI version badge, linked the existing status badges, and exposed
+  documentation and changelog URLs in the package metadata.
 - No runtime, configuration or dependency behaviour changed from 0.3.0.
 
 ## 0.3.0 — 2026-08-08

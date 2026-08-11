@@ -3,8 +3,9 @@
 - Date: 2026-08-11
 - Source: `main` after `v0.3.0`, plus the local presentation-only `0.3.1` patch;
   prepared without commit, tag, GitHub write or PyPI upload
-- Scope: PyPI-safe README image/document links, patch version, regression suite, package
-  build and clean-wheel validation; runtime behaviour is unchanged from `0.3.0`
+- Scope: PyPI-safe README image/document links and badges, package project URLs, patch
+  version, regression suite, package build and clean-wheel validation; runtime behaviour
+  is unchanged from `0.3.0`
 
 This file carries exact evidence that would make the project landing page difficult to
 scan. A repository or CI result establishes software behaviour only in its stated
@@ -50,6 +51,7 @@ root, API allowlist or API token was configured in the isolated test process.
 | Extras | pip `--dry-run` separately for `features`, `totalsegmentator`, `organs`, `report`, `api`, `dev`, `all` | all resolve; no ML weights downloaded |
 | PyPI baseline | User installation from production PyPI | `regix-medical==0.3.0` installs and `regix doctor` reports the registration engine ready |
 | README image | `HEAD https://raw.githubusercontent.com/Thibescobar/regix/main/docs/images/qc-overlay.png` | HTTP 200, `Content-Type: image/png` |
+| PyPI badges | `HEAD` on the version and supported-Python shields.io URLs | both HTTP 200, `Content-Type: image/svg+xml` |
 
 The coverage badge is one point above the enforced CI floor, which is the maximum slack
 allowed by `tests/test_documentation.py`. Optional model/GPU code is not removed from the
