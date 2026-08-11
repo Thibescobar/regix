@@ -18,7 +18,7 @@ reused by the run manifest, the HTML report, the API and the LICENSE.
 
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 #: The single source of truth for the regulatory statement. The run manifest, the HTML
 #: report, the API description and the LICENSE all carry this exact sentence: one

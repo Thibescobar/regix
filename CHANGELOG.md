@@ -3,6 +3,14 @@
 All notable changes are recorded here. Regix follows semantic versioning for its Python
 and CLI contracts.
 
+## 0.3.1 — 2026-08-11
+
+### PyPI presentation
+
+- Replaced repository-relative README image and documentation links with absolute
+  GitHub URLs so the project description renders correctly on PyPI.
+- No runtime, configuration or dependency behaviour changed from 0.3.0.
+
 ## 0.3.0 — 2026-08-08
 
 ### Packaging and descriptor selection

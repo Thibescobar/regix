@@ -1,9 +1,10 @@
-# Verification record — Regix 0.3.0
+# Verification record — Regix 0.3.1
 
 - Date: 2026-08-11
-- Source: audit-closure merge working tree, prepared locally without Git/GitHub or upload
-- Scope: PyPI distribution rename, explicit descriptor provider, focused contracts,
-  post-handoff documentation cleanup, package build and clean-wheel validation
+- Source: `main` after `v0.3.0`, plus the local presentation-only `0.3.1` patch;
+  prepared without commit, tag, GitHub write or PyPI upload
+- Scope: PyPI-safe README image/document links, patch version, regression suite, package
+  build and clean-wheel validation; runtime behaviour is unchanged from `0.3.0`
 
 This file carries exact evidence that would make the project landing page difficult to
 scan. A repository or CI result establishes software behaviour only in its stated
@@ -15,7 +16,7 @@ environment; it does not establish clinical accuracy or regulatory fitness.
 |---|---|
 | OS | macOS 15.2 arm64 |
 | Python | 3.12.7 |
-| Regix | 0.3.0 |
+| Regix | 0.3.1 |
 | Distribution | `regix-medical` |
 | itk-elastix | 0.25.4 |
 | ITK | 5.4.7 |
@@ -35,19 +36,20 @@ root, API allowlist or API token was configured in the isolated test process.
 | Check | Command | Result |
 |---|---|---|
 | Full collection | `python -m pytest -p no:capture --collect-only -q --no-header -p no:cacheprovider` | **225 collected** |
-| Full suite | `python -m pytest -p no:capture -q --junitxml=/tmp/regix-final.xml` | **223 passed, 2 skipped; 225 collected**, 0 failures/errors |
+| Full suite | `python -m pytest -p no:capture -q --junitxml=/tmp/regix-031-tests.xml` | **223 passed, 2 skipped; 225 collected**, 0 failures/errors |
 | Coverage | `python -m pytest -p no:capture -q --cov=regix --cov-report=term-missing:skip-covered --cov-fail-under=81` | **81.85% (82% rounded)**, floor passed; same 223/2 outcomes |
 | Formatting | `ruff format --check regix tests` | pass, 47 files already formatted |
 | Lint | `ruff check regix tests` | pass, no findings |
 | Dead code | `vulture regix .vulture_allowlist.py --min-confidence 90` | pass, no finding |
 | Static types | `mypy regix` | progressive/non-blocking by CI policy: **52 existing errors in 13 files**; no new provider-path error remains |
 | Patch hygiene | `git diff --check` | pass |
-| Package build | `python -m build --outdir /tmp/regix-dist .` | `regix_medical-0.3.0.tar.gz` and universal wheel built |
-| Metadata | `twine check /tmp/regix-dist/*` | both artifacts pass |
+| Package build | `python -m build --no-isolation --outdir /tmp/regix-031-dist.*` from a temporary source copy | `regix_medical-0.3.1.tar.gz` and universal wheel built |
+| Metadata | `twine check /tmp/regix-031-dist.*/*` | both artifacts pass; absolute README image and documentation URLs present |
 | Archive inspection | wheel/sdist member lists plus cache, patient-file and common private-key scans | eight presets and licence present; no cache, DICOM/NIfTI, patient file or detected secret; tests are source-only in the sdist and absent from the wheel |
 | Wheel execution | install wheel with resolved dependencies outside checkout | `import regix`, `regix --version`, `--help`, `doctor`, `presets` and all eight preset loads pass |
 | Extras | pip `--dry-run` separately for `features`, `totalsegmentator`, `organs`, `report`, `api`, `dev`, `all` | all resolve; no ML weights downloaded |
-| PyPI name | `GET https://pypi.org/pypi/regix-medical/json` | HTTP 404 on 2026-08-11: unregistered at check time, not a reservation guarantee |
+| PyPI baseline | User installation from production PyPI | `regix-medical==0.3.0` installs and `regix doctor` reports the registration engine ready |
+| README image | `HEAD https://raw.githubusercontent.com/Thibescobar/regix/main/docs/images/qc-overlay.png` | HTTP 200, `Content-Type: image/png` |
 
 The coverage badge is one point above the enforced CI floor, which is the maximum slack
 allowed by `tests/test_documentation.py`. Optional model/GPU code is not removed from the

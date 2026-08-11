@@ -349,7 +349,7 @@ def test_the_version_is_the_same_in_pyproject_and_in_the_package():
     assert re.search(r'^dynamic\s*=\s*\["version"\]', PYPROJECT, re.M)
     assert 'version = { attr = "regix.__version__" }' in PYPROJECT
     assert not re.search(r'^version\s*=\s*"', PYPROJECT, re.M)
-    assert __version__ == "0.3.0"
+    assert __version__ == "0.3.1"
 
 
 def test_distribution_name_and_install_examples_match():
@@ -371,6 +371,11 @@ def test_distribution_name_and_install_examples_match():
     assert "Regix does not bundle or download the Zoo" in README
     for key, value in ENFORCED_WITH_PARAMETER_FILE.items():
         assert f"`{key}={' '.join(value)}`" in README
+
+    # PyPI renders the README without the repository as a relative-link base.
+    relative_targets = re.findall(r"\]\((?!https?://|#|mailto:)([^)]+)\)", README)
+    assert not relative_targets, f"README links that will break on PyPI: {relative_targets}"
+    assert "https://raw.githubusercontent.com/Thibescobar/regix/main/docs/images/qc-overlay.png" in README
 
 
 def test_documented_feature_providers_are_exactly_the_accepted_values():

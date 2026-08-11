@@ -13,7 +13,7 @@ optional modality-invariant features, independent quality checks and clinical-sy
 exports. The same algorithm can run as a standalone workflow or as an in-memory
 component of a larger application.
 
-![Registration quality-control overlay](docs/images/qc-overlay.png)
+![Registration quality-control overlay](https://raw.githubusercontent.com/Thibescobar/regix/main/docs/images/qc-overlay.png)
 
 > **Not a medical device.** Regix is research software. It has not been cleared or
 > approved by any regulatory authority. No clinical decision should rest on its output
@@ -83,7 +83,7 @@ regix register fixed.nii.gz moving.nii.gz -o out/ --preset base \
 
 Use `regix --help` for batch registration, transform application, segmentation and QC
 re-evaluation. Deployment and HTTP examples live in the
-[operations guide](docs/OPERATIONS.md).
+[operations guide](https://github.com/Thibescobar/regix/blob/main/docs/OPERATIONS.md).
 
 ### Python: standalone or embedded
 
@@ -140,7 +140,7 @@ bundle:
 
 Nonlinear chains retain their elastix files and displacement representation; Regix does
 not mislabel them as a linear DICOM registration. See
-[output lifecycle and replay](docs/OPERATIONS.md#output-lifecycle-and-replay).
+[output lifecycle and replay](https://github.com/Thibescobar/regix/blob/main/docs/OPERATIONS.md#output-lifecycle-and-replay).
 
 ## Presets
 
@@ -228,7 +228,7 @@ regix register fixed.nii.gz moving.nii.gz -o out \
 Anatomix's exact weights, licence, GPU environment and suitability for the intended
 imaging domain must be reviewed separately. Regix applies one shared PCA basis to the
 fixed and moving descriptor channels; the detailed Anatomix/MIND contracts remain in
-[Architecture](docs/ARCHITECTURE.md).
+[Architecture](https://github.com/Thibescobar/regix/blob/main/docs/ARCHITECTURE.md).
 
 ## Validation snapshot
 
@@ -245,7 +245,8 @@ Synthetic phantoms provide known transformations and deliberately failing pairs:
 
 The complete collection has 225 tests and an enforced 81% coverage floor; the measured
 coverage for this archive is 82%. Exact commands, results, conditional skips and
-unverified hardware/clinical boundaries are recorded in [Verification](VERIFICATION.md).
+unverified hardware/clinical boundaries are recorded in
+[Verification](https://github.com/Thibescobar/regix/blob/main/VERIFICATION.md).
 Synthetic success is not clinical validation: patient-data accuracy requires independent
 landmarks or contours and qualified review.
 
@@ -269,12 +270,12 @@ hardware.
 
 | Need | Document |
 |---|---|
-| Architecture, invariants and extension points | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| Deployment, API, DICOM, replay and capacity | [docs/OPERATIONS.md](docs/OPERATIONS.md) |
-| Exact verification evidence and boundaries | [VERIFICATION.md](VERIFICATION.md) |
-| Development and release workflow | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Behavioural history | [CHANGELOG.md](CHANGELOG.md) |
-| Audit finding closure | [AUDIT_CLOSURE.md](AUDIT_CLOSURE.md) |
+| Architecture, invariants and extension points | [docs/ARCHITECTURE.md](https://github.com/Thibescobar/regix/blob/main/docs/ARCHITECTURE.md) |
+| Deployment, API, DICOM, replay and capacity | [docs/OPERATIONS.md](https://github.com/Thibescobar/regix/blob/main/docs/OPERATIONS.md) |
+| Exact verification evidence and boundaries | [VERIFICATION.md](https://github.com/Thibescobar/regix/blob/main/VERIFICATION.md) |
+| Development and release workflow | [CONTRIBUTING.md](https://github.com/Thibescobar/regix/blob/main/CONTRIBUTING.md) |
+| Behavioural history | [CHANGELOG.md](https://github.com/Thibescobar/regix/blob/main/CHANGELOG.md) |
+| Audit finding closure | [AUDIT_CLOSURE.md](https://github.com/Thibescobar/regix/blob/main/AUDIT_CLOSURE.md) |
 
 ## Limitations
 
@@ -290,7 +291,7 @@ hardware.
 
 ## License
 
-Apache-2.0; see [LICENSE](LICENSE). Regix redistributes no model weights. Optional
+Apache-2.0; see [LICENSE](https://github.com/Thibescobar/regix/blob/main/LICENSE). Regix redistributes no model weights. Optional
 components retain their own licenses and terms, which must be reviewed before commercial
 or clinical use.
 
