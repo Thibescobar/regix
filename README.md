@@ -64,14 +64,19 @@ cd regix
 pip install .
 ```
 
-Optional extras from the checkout:
+Optional extras work with both installation methods:
+
+| Extras | From PyPI | From the source checkout |
+| --- | --- | --- |
+| Report | `pip install "regix-medical[report]"` | `pip install ".[report]"` |
+| API and report | `pip install "regix-medical[api,report]"` | `pip install ".[api,report]"` |
+| Features | `pip install "regix-medical[features]"` | `pip install ".[features]"` |
+| TotalSegmentator | `pip install "regix-medical[totalsegmentator]"` | `pip install ".[totalsegmentator]"` |
+
+The optional Anatomix model is installed separately with either method:
 
 ```bash
-pip install ".[report]"
-pip install ".[api,report]"
-pip install ".[features]"
-pip install ".[totalsegmentator]"
-pip install "anatomix @ git+https://github.com/neel-dey/anatomix.git"  # optional model
+pip install "anatomix @ git+https://github.com/neel-dey/anatomix.git"
 ```
 
 `report` adds QC figures, `api` the HTTP service, `features` the torch/Monai tooling used
