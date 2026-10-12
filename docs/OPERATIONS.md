@@ -6,15 +6,22 @@ and validation on representative local data.
 
 ## Installation profiles
 
-Use a dedicated environment and record the resolved dependencies. Core CPU operation:
+Use the GitHub source for the current PolyForm version. PyPI currently provides only
+the older Apache-2.0 release, 0.3.1. Use a dedicated environment and record the resolved
+dependencies. Core CPU operation from a checkout:
 
 ```bash
+git clone https://github.com/Thibescobar/regix.git
+cd regix
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install regix-medical
+python -m pip install .
 regix doctor --json
 regix version --json
 ```
+
+For installation without pip, see the
+[uv instructions](https://github.com/Thibescobar/regix#alternative-without-pip-uv).
 
 The repository provides `requirements-lock.txt` for the audited Linux/Python 3.12
 numerical environment. It is not a universal cross-platform lock. Build wheels in CI,
