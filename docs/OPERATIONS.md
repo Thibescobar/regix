@@ -15,13 +15,10 @@ git clone https://github.com/Thibescobar/regix.git
 cd regix
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install .
+pip install .
 regix doctor --json
 regix version --json
 ```
-
-For installation without pip, see the
-[uv instructions](https://github.com/Thibescobar/regix#alternative-without-pip-uv).
 
 The repository provides `requirements-lock.txt` for the audited Linux/Python 3.12
 numerical environment. It is not a universal cross-platform lock. Build wheels in CI,

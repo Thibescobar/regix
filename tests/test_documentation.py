@@ -365,13 +365,12 @@ def test_distribution_name_and_install_examples_match():
     assert 'Changelog = "https://github.com/Thibescobar/regix/blob/main/CHANGELOG.md"' in PYPROJECT
     for command in (
         "git clone https://github.com/Thibescobar/regix.git",
-        "python -m pip install .",
-        'python -m pip install ".[report]"',
-        'python -m pip install ".[api,report]"',
-        'python -m pip install ".[features]"',
-        'python -m pip install ".[totalsegmentator]"',
-        'python -m pip install "regix-medical==0.3.1"',
-        "uv sync --python 3.12 --extra report",
+        "pip install .",
+        'pip install ".[report]"',
+        'pip install ".[api,report]"',
+        'pip install ".[features]"',
+        'pip install ".[totalsegmentator]"',
+        "pip install regix-medical",
     ):
         assert command in README, f"missing documented install: {command}"
 

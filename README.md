@@ -8,10 +8,8 @@ Multimodal, multi-organ medical image registration with elastix.
 [![Coverage](https://img.shields.io/badge/coverage-82%25-yellowgreen)](https://github.com/Thibescobar/regix/blob/main/VERIFICATION.md)
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](https://github.com/Thibescobar/regix/blob/main/LICENSE)
 
-> **Distribution status:** PyPI currently stops at **0.3.1**, the last Apache-2.0
-> open-source release. **0.4.0 is available from this GitHub repository under PolyForm
-> Noncommercial 1.0.0 and has not yet been published to PyPI.** The PyPI badges above
-> describe the older distribution. Use the source installation below for the current version.
+> **PyPI currently provides 0.3.1, the last Apache-2.0 release.** Install from
+> GitHub for 0.4.0 under PolyForm Noncommercial 1.0.0 (not yet published to PyPI).
 
 Regix turns DICOM series or NIfTI volumes into an auditable registration result. It
 combines rigid, affine and deformable elastix stages with organ-aware initialization,
@@ -50,33 +48,30 @@ Three invariants guide the implementation:
 
 ### Installation
 
-#### Current version: install from GitHub
+Requires Python 3.10–3.12.
 
-Requires Git and Python 3.10–3.12. On Linux or macOS:
+**From PyPI** (currently 0.3.1, Apache-2.0):
+
+```bash
+pip install regix-medical
+```
+
+**From source** (0.4.0, PolyForm Noncommercial):
 
 ```bash
 git clone https://github.com/Thibescobar/regix.git
 cd regix
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install .
-regix --version
-regix doctor
+pip install .
 ```
 
-On Windows, create the environment with `py -3.12 -m venv .venv` and activate it
-with `.venv\Scripts\Activate.ps1` in PowerShell. `pip install .` installs Regix from
-the checkout, rather than the older Regix package on PyPI; dependencies still come
-from the configured package index.
-
-Select the extras you need when installing from the checkout:
+Optional extras from the checkout:
 
 ```bash
-python -m pip install ".[report]"
-python -m pip install ".[api,report]"
-python -m pip install ".[features]"
-python -m pip install ".[totalsegmentator]"
-python -m pip install "anatomix @ git+https://github.com/neel-dey/anatomix.git"  # optional model
+pip install ".[report]"
+pip install ".[api,report]"
+pip install ".[features]"
+pip install ".[totalsegmentator]"
+pip install "anatomix @ git+https://github.com/neel-dey/anatomix.git"  # optional model
 ```
 
 `report` adds QC figures, `api` the HTTP service, `features` the torch/Monai tooling used
@@ -85,32 +80,7 @@ Anatomix remains an explicit upstream install so its code, weights and terms can
 reviewed. Core registration, mutual information and MIND-SSC need no GPU or model
 weights. Contributors instead use `pip install -e ".[dev,report]"` from a checkout.
 
-#### Alternative without pip: uv
-
-After installing [uv](https://docs.astral.sh/uv/getting-started/installation/), run
-these commands in the cloned repository. uv manages Python and the local environment
-and installs Regix from source without using pip:
-
-```bash
-uv sync --python 3.12 --extra report
-uv run --extra report regix --version
-uv run --extra report regix doctor
-```
-
-Use `uv run --extra report regix ...` for subsequent commands, or activate `.venv`
-to use `regix` directly. Dependencies still come from the configured package index.
-
-#### Older PyPI release: 0.3.1 (Apache-2.0)
-
-The PyPI distribution has not been updated beyond 0.3.1. To install that older
-open-source release explicitly, use a separate environment:
-
-```bash
-python -m pip install "regix-medical==0.3.1"
-```
-
-This does **not** install the current PolyForm version. Versions 0.3.0 and 0.3.1
-remain available under Apache-2.0; the license change applies starting with 0.4.0.
+Run `regix doctor` to check the installation.
 
 ### Command line
 
