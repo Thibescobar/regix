@@ -1,3 +1,33 @@
+# Verification record — Regix 0.4.0
+
+- Date: 2026-10-12
+- Scope: PolyForm Noncommercial 1.0.0 migration, version and release documentation,
+  and a tag-triggered PyPI Trusted Publishing workflow. Runtime code is unchanged
+  except for the version constant. Existing 0.3.0/0.3.1 tags are preserved.
+- Environment: Linux, Python 3.12.14, itk-elastix 0.25.4, ITK 5.4.7,
+  SimpleITK 2.5.6, NumPy 2.5.4; isolated CPU environment without optional model weights.
+
+| Check | Result |
+|---|---|
+| Full suite with coverage | **223 passed, 2 skipped; 225 collected**, 0 failures/errors |
+| Coverage | **81.85%**, above the 81% floor |
+| Formatting and lint | pass, 47 Python files already formatted |
+| Dead-code inventory | pass |
+| Static types | non-blocking: 52 errors in 13 files, matching the prior recorded count |
+| Package build | 0.4.0 sdist and universal wheel built successfully |
+| PyPI metadata | both artifacts pass `twine check --strict`; version and PolyForm license expression verified |
+| Bundled license | wheel and sdist contain the exact project LICENSE, including medical and third-party notices |
+| Installed wheel | imported outside the checkout; version 0.4.0 and all eight presets verified |
+| Publishing workflow | YAML and embedded Python syntax validated; upload requires the configured PyPI publisher |
+
+The confined test process stalled in a system wait and was stopped. The complete run
+above passed outside the filesystem/network sandbox. The two conditional skips are
+unchanged in purpose: build-specific golden reference and external DICOM conformance.
+The workflow's live publication is recorded by GitHub Actions and PyPI, not implied by
+these local build checks.
+
+---
+
 # Verification record — Regix 0.3.1
 
 - Date: 2026-08-11

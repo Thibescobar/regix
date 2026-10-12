@@ -3,6 +3,19 @@
 All notable changes are recorded here. Regix follows semantic versioning for its Python
 and CLI contracts.
 
+## 0.4.0 — 2026-10-12
+
+### Licensing
+
+- Changed the project license from Apache-2.0 to PolyForm Noncommercial 1.0.0.
+- Noncommercial uses and the organizational uses expressly permitted by PolyForm
+  remain free. Commercial uses outside those permissions require a separate paid
+  commercial license from Thibault Escobar.
+- Versions 0.3.0 and 0.3.1 retain their Apache-2.0 license; their published packages
+  and Git tags are unchanged.
+- Preserved the medical-use disclaimer and third-party licensing notices.
+- No runtime, configuration or dependency behaviour changed from 0.3.1.
+
 ## 0.3.1 — 2026-08-11
 
 ### PyPI presentation

@@ -6,7 +6,7 @@ Multimodal, multi-organ medical image registration with elastix.
 [![CI](https://github.com/Thibescobar/regix/actions/workflows/ci.yml/badge.svg)](https://github.com/Thibescobar/regix/actions/workflows/ci.yml)
 [![Python versions](https://img.shields.io/pypi/pyversions/regix-medical.svg)](https://pypi.org/project/regix-medical/)
 [![Coverage](https://img.shields.io/badge/coverage-82%25-yellowgreen)](https://github.com/Thibescobar/regix/blob/main/VERIFICATION.md)
-[![License](https://img.shields.io/badge/license-Apache%202.0-green)](https://github.com/Thibescobar/regix/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](https://github.com/Thibescobar/regix/blob/main/LICENSE)
 
 Regix turns DICOM series or NIfTI volumes into an auditable registration result. It
 combines rigid, affine and deformable elastix stages with organ-aware initialization,
@@ -292,9 +292,17 @@ hardware.
 
 ## License
 
-Apache-2.0; see [LICENSE](https://github.com/Thibescobar/regix/blob/main/LICENSE). Regix redistributes no model weights. Optional
-components retain their own licenses and terms, which must be reviewed before commercial
-or clinical use.
+Regix is licensed under the [PolyForm Noncommercial License 1.0.0](https://github.com/Thibescobar/regix/blob/main/LICENSE).
+It permits noncommercial use, modification, and redistribution, including noncommercial research and teaching.
+It also permits use by the organizations listed in the license, including educational institutions, public research organizations, and public safety or health organizations, regardless of their funding source or obligations resulting from that funding.
+
+Commercial uses outside these permissions, including commercial R&D, integration into commercial products or services, and internal commercial production use, require a separate paid commercial license. Contact [Thibault Escobar](https://github.com/Thibescobar) for commercial licensing terms.
+
+The full license text governs these permissions. Dependencies and model weights remain subject to their respective licenses.
+
+**License change in 0.4.0:** versions 0.3.0 and 0.3.1 were published under Apache-2.0 and remain available under that license. Starting with 0.4.0, Regix is distributed under PolyForm Noncommercial 1.0.0.
+
+Regix redistributes no model weights. Optional components retain their own licenses and terms, which must be reviewed before commercial or clinical use.
 
 ## Author
 

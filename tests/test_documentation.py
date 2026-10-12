@@ -349,7 +349,7 @@ def test_the_version_is_the_same_in_pyproject_and_in_the_package():
     assert re.search(r'^dynamic\s*=\s*\["version"\]', PYPROJECT, re.M)
     assert 'version = { attr = "regix.__version__" }' in PYPROJECT
     assert not re.search(r'^version\s*=\s*"', PYPROJECT, re.M)
-    assert __version__ == "0.3.1"
+    assert __version__ == "0.4.0"
 
 
 def test_distribution_name_and_install_examples_match():

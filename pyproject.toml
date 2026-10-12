@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Multimodal / multi-organ medical image registration (elastix + anatomix features + organ segmentation)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "Apache-2.0"
+license = "PolyForm-Noncommercial-1.0.0"
 authors = [{ name = "Thibault Escobar" }]
 keywords = ["registration", "elastix", "anatomix", "medical-imaging", "dicom", "multimodal"]
 classifiers = [

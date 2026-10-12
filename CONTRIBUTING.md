@@ -80,6 +80,22 @@ physical points or millimetres, not only array indices.
 - Update `AUDIT_CLOSURE.md` only with reproducible evidence.
 - Inspect `git diff --check`, `git status --short`, and the contents of the built wheel.
 
+## Publishing to PyPI
+
+The `publish.yml` workflow builds and publishes version tags (`v*`) using PyPI
+Trusted Publishing. Configure the existing `regix-medical` project's publisher with
+owner `Thibescobar`, repository `regix`, workflow `publish.yml`, and environment `pypi`.
+No PyPI API token is required.
+
+Before tagging, complete the checks above, update `regix.__version__`, its documentation
+test and the changelog, and confirm that the new version is not already on PyPI. The
+workflow checks that the tag, package version, license metadata, and bundled license
+agree before uploading. A failed publication can be retried through the workflow's
+manual trigger by selecting the same version tag.
+
+Versions `0.3.0` and `0.3.1` were published under Apache-2.0. Preserve those releases
+and their tags; PolyForm Noncommercial 1.0.0 applies starting with `0.4.0`.
+
 ## Pull requests
 
 Explain the user-visible contract, the failure mode being prevented, and the validation
